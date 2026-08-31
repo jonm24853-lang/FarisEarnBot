@@ -1,7 +1,7 @@
 import os
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -26,18 +26,29 @@ DB_FILE = "faris_earn.db"
 # نظام النقاط
 # =========================
 
-# 5000 نقطة = 1 USDT
 POINTS_PER_USDT = 5000
 
-# الحد الأدنى للسحب
-# 5000 نقطة = 1 USDT
 MIN_WITHDRAW_POINTS = 5000
 
-# مكافأة التسجيل
 WELCOME_BONUS = 100
 
-# مكافأة الإحالة
 REFERRAL_BONUS = 500
+
+CHANNEL_BONUS = 100
+
+YOUTUBE_BONUS = 100
+
+DAILY_BONUS = 100
+
+# =========================
+# الروابط
+# =========================
+
+TELEGRAM_CHANNEL = "@farehes"
+
+TELEGRAM_CHANNEL_LINK = "https://t.me/farehes"
+
+YOUTUBE_CHANNEL_LINK = "https://www.youtube.com/@VsdGggf"
 
 
 # =========================
@@ -63,6 +74,7 @@ def get_db():
 
 
 def init_db():
+
     conn = get_db()
     cur = conn.cursor()
 
@@ -73,7 +85,10 @@ def init_db():
             first_name TEXT,
             points INTEGER DEFAULT 0,
             referred_by INTEGER,
-            created_at TEXT
+            created_at TEXT,
+            channel_bonus INTEGER DEFAULT 0,
+            youtube_bonus INTEGER DEFAULT 0,
+            last_daily TEXT
         )
     """)
 
@@ -89,6 +104,33 @@ def init_db():
         )
     """)
 
+    # تحديث قاعدة البيانات القديمة
+
+    columns = [
+        row["name"]
+        for row in cur.execute(
+            "PRAGMA table_info(users)"
+        ).fetchall()
+    ]
+
+    if "channel_bonus" not in columns:
+        cur.execute(
+            "ALTER TABLE users "
+            "ADD COLUMN channel_bonus INTEGER DEFAULT 0"
+        )
+
+    if "youtube_bonus" not in columns:
+        cur.execute(
+            "ALTER TABLE users "
+            "ADD COLUMN youtube_bonus INTEGER DEFAULT 0"
+        )
+
+    if "last_daily" not in columns:
+        cur.execute(
+            "ALTER TABLE users "
+            "ADD COLUMN last_daily TEXT"
+        )
+
     conn.commit()
     conn.close()
 
@@ -98,6 +140,7 @@ def init_db():
 # =========================
 
 def get_user(user_id):
+
     conn = get_db()
 
     user = conn.execute(
@@ -116,6 +159,7 @@ def create_user(
     first_name,
     referred_by=None
 ):
+
     conn = get_db()
 
     existing = conn.execute(
@@ -135,9 +179,12 @@ def create_user(
             first_name,
             points,
             referred_by,
-            created_at
+            created_at,
+            channel_bonus,
+            youtube_bonus,
+            last_daily
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id,
         username or "",
@@ -145,18 +192,22 @@ def create_user(
         WELCOME_BONUS,
         referred_by,
         datetime.now().isoformat(),
+        0,
+        0,
+        None,
     ))
 
-    # مكافأة صاحب رابط الإحالة
+    # مكافأة الإحالة
+
     if referred_by and referred_by != user_id:
 
-        # نتأكد أن صاحب الإحالة موجود
         referrer = conn.execute(
             "SELECT user_id FROM users WHERE user_id = ?",
             (referred_by,)
         ).fetchone()
 
         if referrer:
+
             conn.execute("""
                 UPDATE users
                 SET points = points + ?
@@ -173,6 +224,7 @@ def create_user(
 
 
 def add_points(user_id, points):
+
     conn = get_db()
 
     conn.execute("""
@@ -245,7 +297,7 @@ async def start(
         except ValueError:
             referred_by = None
 
-    created = create_user(
+    create_user(
         user.id,
         user.username,
         user.first_name,
@@ -260,20 +312,25 @@ async def start(
 💰 اربح النقاط من خلال المهام والإحالات.
 
 💎 نظام التحويل:
-
 ⭐ 5000 نقطة = 1 USDT
 
 💸 الحد الأدنى للسحب:
-
 5000 نقطة = 1 USDT
 
 🎁 مكافأة التسجيل:
-
 {WELCOME_BONUS} نقطة
 
 👥 مكافأة الإحالة:
-
 {REFERRAL_BONUS} نقطة
+
+📢 مكافأة Telegram:
+{CHANNEL_BONUS} نقطة
+
+📺 مكافأة YouTube:
+{YOUTUBE_BONUS} نقطة
+
+🎁 المكافأة اليومية:
+{DAILY_BONUS} نقطة
 
 اختر من القائمة 👇
 """
@@ -294,7 +351,6 @@ async def balance(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     user = get_user(query.from_user.id)
@@ -318,15 +374,12 @@ async def balance(
 {points:,}
 
 💵 القيمة:
-
 {usdt:.4f} USDT
 
 📌 نظام التحويل:
-
 5000 نقطة = 1 USDT
 
 💸 الحد الأدنى للسحب:
-
 5000 نقطة = 1 USDT
 """
 
@@ -388,20 +441,308 @@ async def tasks(
 
     await query.answer()
 
-    text = """
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📢 اشترك في Telegram",
+                url=TELEGRAM_CHANNEL_LINK
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ تحقق من Telegram",
+                callback_data="check_channel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📺 افتح YouTube",
+                url=YOUTUBE_CHANNEL_LINK
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ احصل على مكافأة YouTube",
+                callback_data="youtube_bonus"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🎁 المكافأة اليومية",
+                callback_data="daily_bonus"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 دعوة الأصدقاء",
+                callback_data="referral"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 القائمة الرئيسية",
+                callback_data="main_menu"
+            )
+        ],
+    ])
+
+    text = f"""
 🎁 المهام
 
-حالياً يمكنك الربح من خلال:
+📢 اشتراك Telegram
+⭐ +{CHANNEL_BONUS} نقطة
+
+📺 قناة YouTube
+⭐ +{YOUTUBE_BONUS} نقطة
+
+🎁 المكافأة اليومية
+⭐ +{DAILY_BONUS} نقطة
+مرة واحدة يومياً
 
 👥 دعوة الأصدقاء
+⭐ +{REFERRAL_BONUS} نقطة
+لكل إحالة ناجحة
 
-🎁 مكافأة التسجيل
-
-⚙️ سيتم إضافة المزيد من المهام لاحقاً.
+نفذ المهام واحصل على النقاط 👇
 """
 
     await query.message.reply_text(
         text,
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# التحقق من Telegram
+# =========================
+
+async def check_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=TELEGRAM_CHANNEL,
+            user_id=user_id
+        )
+
+        if member.status not in [
+            "member",
+            "administrator",
+            "creator"
+        ]:
+
+            await query.answer(
+                "❌ اشترك في القناة أولاً.",
+                show_alert=True
+            )
+
+            return
+
+        user = get_user(user_id)
+
+        if not user:
+            return
+
+        if user["channel_bonus"] == 1:
+
+            await query.answer(
+                "ℹ️ حصلت على مكافأة Telegram مسبقاً.",
+                show_alert=True
+            )
+
+            return
+
+        conn = get_db()
+
+        conn.execute("""
+            UPDATE users
+            SET points = points + ?,
+                channel_bonus = 1
+            WHERE user_id = ?
+        """, (
+            CHANNEL_BONUS,
+            user_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        await query.answer(
+            f"🎉 +{CHANNEL_BONUS} نقطة!",
+            show_alert=True
+        )
+
+        await query.message.reply_text(
+            f"""
+✅ تم التحقق بنجاح!
+
+📢 اشتراك Telegram مؤكد.
+
+🎁 المكافأة:
++{CHANNEL_BONUS} نقطة
+""",
+            reply_markup=main_keyboard()
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Telegram verification error: {e}"
+        )
+
+        await query.answer(
+            "❌ حدث خطأ أثناء التحقق.",
+            show_alert=True
+        )
+
+
+# =========================
+# مكافأة YouTube
+# =========================
+
+async def youtube_bonus(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        return
+
+    if user["youtube_bonus"] == 1:
+
+        await query.message.reply_text(
+            "ℹ️ حصلت على مكافأة YouTube مسبقاً.",
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET points = points + ?,
+            youtube_bonus = 1
+        WHERE user_id = ?
+    """, (
+        YOUTUBE_BONUS,
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await query.message.reply_text(
+        f"""
+🎉 تم تسجيل مهمة YouTube!
+
+📺 شكراً لدعم القناة.
+
+🎁 المكافأة:
++{YOUTUBE_BONUS} نقطة
+
+⚠️ ملاحظة:
+البوت لا يستطيع التحقق تلقائياً من اشتراك YouTube.
+""",
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
+# المكافأة اليومية
+# =========================
+
+async def daily_bonus(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        return
+
+    today = date.today().isoformat()
+
+    if user["last_daily"] == today:
+
+        await query.message.reply_text(
+            """
+⏳ لقد استلمت المكافأة اليومية اليوم.
+
+🎁 عد غداً للحصول على مكافأتك.
+""",
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET points = points + ?,
+            last_daily = ?
+        WHERE user_id = ?
+    """, (
+        DAILY_BONUS,
+        today,
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await query.message.reply_text(
+        f"""
+🎉 مبروك!
+
+🎁 حصلت على المكافأة اليومية.
+
+⭐ +{DAILY_BONUS} نقطة
+
+📅 عد غداً للحصول على مكافأة جديدة.
+""",
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
+# القائمة الرئيسية
+# =========================
+
+async def main_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    await query.message.reply_text(
+        "🏠 القائمة الرئيسية",
         reply_markup=main_keyboard()
     )
 
@@ -444,15 +785,12 @@ async def stats(
 📊 إحصائياتك
 
 ⭐ النقاط:
-
 {points:,}
 
 👥 عدد الإحالات:
-
 {referrals}
 
 💵 القيمة:
-
 {usdt:.4f} USDT
 """
 
@@ -492,19 +830,15 @@ async def withdraw(
 ❌ لا يمكنك السحب حالياً.
 
 ⭐ رصيدك:
-
 {points:,} نقطة
 
 💸 الحد الأدنى:
-
 {MIN_WITHDRAW_POINTS:,} نقطة
 
 💵 الحد الأدنى:
-
 1 USDT
 
 📌 تحتاج إلى:
-
 {missing:,} نقطة إضافية.
 """
 
@@ -523,10 +857,12 @@ async def withdraw(
         """
 💳 طلب السحب
 
-أرسل الآن عنوان محفظة USDT
-التي تريد استلام المبلغ عليها.
+أرسل الآن عنوان محفظة USDT.
 
 ⚠️ تأكد من صحة العنوان قبل الإرسال.
+
+لإلغاء العملية استخدم:
+ /cancel
 """
     )
 
@@ -601,7 +937,6 @@ async def receive_wallet(
         datetime.now().isoformat()
     ))
 
-    # تصفير الرصيد بعد تسجيل الطلب
     conn.execute("""
         UPDATE users
         SET points = 0
@@ -620,19 +955,15 @@ async def receive_wallet(
 ✅ تم تسجيل طلب السحب.
 
 💵 المبلغ:
-
 {usdt:.4f} USDT
 
 ⭐ النقاط:
-
 {points:,}
 
 💳 المحفظة:
-
 {wallet}
 
 ⏳ الحالة:
-
 قيد المراجعة
 
 سيتم مراجعة الطلب من الإدارة.
@@ -640,7 +971,8 @@ async def receive_wallet(
         reply_markup=main_keyboard()
     )
 
-    # إرسال إشعار للإدارة
+    # إشعار الإدارة
+
     if ADMIN_ID:
 
         try:
@@ -651,27 +983,21 @@ async def receive_wallet(
 🚨 طلب سحب جديد
 
 👤 المستخدم:
-
 {user.first_name}
 
 🆔 ID:
-
 {user.id}
 
 ⭐ النقاط:
-
 {points:,}
 
 💵 المبلغ:
-
 {usdt:.4f} USDT
 
 💳 المحفظة:
-
 {wallet}
 
 ⏳ الحالة:
-
 Pending
 """
             )
@@ -720,16 +1046,28 @@ async def admin(
 👑 لوحة الإدارة
 
 👥 عدد المستخدمين:
-
 {users}
 
 💸 طلبات السحب المعلقة:
-
 {pending}
 
-💎 نظام التحويل:
-
+💎 التحويل:
 5000 نقطة = 1 USDT
+
+🎁 التسجيل:
+{WELCOME_BONUS} نقطة
+
+👥 الإحالة:
+{REFERRAL_BONUS} نقطة
+
+📢 Telegram:
+{CHANNEL_BONUS} نقطة
+
+📺 YouTube:
+{YOUTUBE_BONUS} نقطة
+
+🎁 اليومية:
+{DAILY_BONUS} نقطة
 """
     )
 
@@ -774,6 +1112,14 @@ async def addpoints(
 
         return
 
+    if points <= 0:
+
+        await update.message.reply_text(
+            "❌ يجب أن تكون النقاط أكبر من صفر."
+        )
+
+        return
+
     user = get_user(user_id)
 
     if not user:
@@ -794,11 +1140,9 @@ async def addpoints(
 ✅ تمت إضافة النقاط.
 
 👤 المستخدم:
-
 {user_id}
 
 ⭐ النقاط المضافة:
-
 {points:,}
 """
     )
@@ -843,6 +1187,7 @@ def main():
     )
 
     # الأوامر
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -872,6 +1217,7 @@ def main():
     )
 
     # الأزرار
+
     application.add_handler(
         CallbackQueryHandler(
             balance,
@@ -907,7 +1253,36 @@ def main():
         )
     )
 
-    # استقبال عنوان المحفظة
+    application.add_handler(
+        CallbackQueryHandler(
+            check_channel,
+            pattern="^check_channel$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            youtube_bonus,
+            pattern="^youtube_bonus$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            daily_bonus,
+            pattern="^daily_bonus$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            main_menu,
+            pattern="^main_menu$"
+        )
+    )
+
+    # استقبال المحفظة
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
