@@ -14,16 +14,14 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DB_FILE = "faris_earn.db"
+REFERRAL_BONUS = 100
+MIN_WITHDRAW = 1000
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
-
-# =========================
-# قاعدة البيانات
-# =========================
 
 def get_db():
     return sqlite3.connect(DB_FILE)
@@ -48,7 +46,7 @@ def init_db():
     db.close()
 
 
-def add_user(user_id, username, first_name):
+def ensure_user(user_id, username, first_name):
     db = get_db()
     cursor = db.cursor()
 
@@ -76,7 +74,11 @@ def get_user(user_id):
     cursor = db.cursor()
 
     cursor.execute(
-        "SELECT balance, referrals FROM users WHERE user_id = ?",
+        """
+        SELECT balance, referrals, referred_by
+        FROM users
+        WHERE user_id = ?
+        """,
         (user_id,)
     )
 
@@ -86,36 +88,71 @@ def get_user(user_id):
     return result
 
 
-# =========================
-# /start
-# =========================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     user_id = user.id
 
-    # إنشاء المستخدم إذا كان جديدًا
     db = get_db()
     cursor = db.cursor()
 
+    # إنشاء المستخدم إذا لم يكن موجودًا
     cursor.execute(
-        "SELECT user_id FROM users WHERE user_id = ?",
+        "SELECT user_id, referred_by FROM users WHERE user_id = ?",
         (user_id,)
     )
 
-    existing_user = cursor.fetchone()
+    existing = cursor.fetchone()
 
-    if not existing_user:
+    if not existing:
 
-        referred_by = None
+        cursor.execute(
+            """
+            INSERT INTO users
+            (user_id, username, first_name, balance, referrals)
+            VALUES (?, ?, ?, 0, 0)
+            """,
+            (
+                user_id,
+                user.username or "",
+                user.first_name or "",
+            )
+        )
 
-        # فحص رابط الإحالة
-        if context.args:
-            try:
-                referrer_id = int(context.args[0])
+        existing_referred_by = None
 
-                if referrer_id != user_id:
+    else:
+        existing_referred_by = existing[1]
+
+        # تحديث بيانات المستخدم
+        cursor.execute(
+            """
+            UPDATE users
+            SET username = ?, first_name = ?
+            WHERE user_id = ?
+            """,
+            (
+                user.username or "",
+                user.first_name or "",
+                user_id,
+            )
+        )
+
+    referral_added = False
+    referrer_id = None
+
+    # معالجة رابط الإحالة
+    if context.args:
+
+        try:
+            referrer_id = int(context.args[0])
+
+            # منع إحالة النفس
+            if referrer_id != user_id:
+
+                # لا نضيف إحالة إذا كان لديه محيل سابق
+                if existing_referred_by is None:
+
                     cursor.execute(
                         "SELECT user_id FROM users WHERE user_id = ?",
                         (referrer_id,)
@@ -124,39 +161,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     referrer_exists = cursor.fetchone()
 
                     if referrer_exists:
-                        referred_by = referrer_id
 
-            except ValueError:
-                pass
+                        cursor.execute(
+                            """
+                            UPDATE users
+                            SET referred_by = ?
+                            WHERE user_id = ?
+                            """,
+                            (referrer_id, user_id)
+                        )
 
-        cursor.execute(
-            """
-            INSERT INTO users
-            (user_id, username, first_name, balance, referrals, referred_by)
-            VALUES (?, ?, ?, 0, 0, ?)
-            """,
-            (
-                user_id,
-                user.username or "",
-                user.first_name or "",
-                referred_by,
-            )
-        )
+                        cursor.execute(
+                            """
+                            UPDATE users
+                            SET balance = balance + ?,
+                                referrals = referrals + 1
+                            WHERE user_id = ?
+                            """,
+                            (REFERRAL_BONUS, referrer_id)
+                        )
 
-        # مكافأة الإحالة
-        if referred_by:
+                        referral_added = True
 
-            REFERRAL_BONUS = 100
-
-            cursor.execute(
-                """
-                UPDATE users
-                SET balance = balance + ?,
-                    referrals = referrals + 1
-                WHERE user_id = ?
-                """,
-                (REFERRAL_BONUS, referred_by)
-            )
+        except ValueError:
+            pass
 
     db.commit()
     db.close()
@@ -183,17 +211,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ])
 
-    await update.message.reply_text(
+    message = (
         "🤖 أهلاً بك في FarisEarnBot 💎\n\n"
-        "اكسب النقاط من المهام ودعوة الأصدقاء.\n\n"
-        "اختر من القائمة:",
+        "💎 اكسب النقاط من المهام ودعوة الأصدقاء.\n\n"
+        "اختر من القائمة:"
+    )
+
+    if referral_added:
+        message += (
+            "\n\n🎉 تم تسجيلك عن طريق رابط إحالة!"
+        )
+
+    await update.message.reply_text(
+        message,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-
-# =========================
-# الأزرار
-# =========================
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -202,8 +235,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
 
-    # تأكد أن المستخدم موجود
-    add_user(
+    ensure_user(
         user_id,
         query.from_user.username or "",
         query.from_user.first_name or ""
@@ -230,21 +262,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "referral":
 
         bot = await context.bot.get_me()
-        bot_username = bot.username
 
         text = (
             "👥 دعوة الأصدقاء\n\n"
             "🔗 رابط دعوتك الخاص:\n\n"
-            f"https://t.me/{bot_username}?start={user_id}\n\n"
-            "🎁 عندما ينضم شخص جديد من رابطك تحصل على 100 نقطة."
+            f"https://t.me/{bot.username}?start={user_id}\n\n"
+            f"🎁 تحصل على {REFERRAL_BONUS} نقطة عن كل إحالة ناجحة."
         )
 
     elif query.data == "withdraw":
 
         user_data = get_user(user_id)
         balance = user_data[0] if user_data else 0
-
-        MIN_WITHDRAW = 1000
 
         if balance >= MIN_WITHDRAW:
 
@@ -277,13 +306,14 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_data = get_user(user_id)
         referrals = user_data[1] if user_data else 0
+        balance = user_data[0] if user_data else 0
 
         db.close()
 
         text = (
             "📊 إحصائياتك\n\n"
             f"👥 إحالاتك: {referrals}\n"
-            f"💎 رصيدك: {user_data[0]} نقطة\n\n"
+            f"💎 رصيدك: {balance} نقطة\n\n"
             f"👤 إجمالي المستخدمين: {users_count}\n"
             f"💰 إجمالي النقاط: {total_balance}"
         )
@@ -320,10 +350,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(text)
 
-
-# =========================
-# تشغيل البوت
-# =========================
 
 def main():
 
