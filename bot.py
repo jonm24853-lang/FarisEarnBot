@@ -1,7 +1,7 @@
 import os
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,453 +13,282 @@ from telegram.ext import (
     filters,
 )
 
+# =========================
+# الإعدادات
+# =========================
+
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DB_FILE = "faris_earn.db"
 
-REFERRAL_BONUS = 100
-DAILY_BONUS = 50
-MIN_WITHDRAW = 1000
+# =========================
+# نظام النقاط
+# =========================
 
-# القناة المطلوبة للاشتراك
-CHANNEL_USERNAME = "@farehes"
+# 5000 نقطة = 1 USDT
+POINTS_PER_USDT = 5000
+
+# الحد الأدنى للسحب
+# 5000 نقطة = 1 USDT
+MIN_WITHDRAW_POINTS = 5000
+
+# مكافأة التسجيل
+WELCOME_BONUS = 100
+
+# مكافأة الإحالة
+REFERRAL_BONUS = 500
+
+
+# =========================
+# Logging
+# =========================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
+logger = logging.getLogger(__name__)
 
-# ==================================================
+
+# =========================
 # قاعدة البيانات
-# ==================================================
+# =========================
 
 def get_db():
-    return sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
-    db = get_db()
-    cursor = db.cursor()
+    conn = get_db()
+    cur = conn.cursor()
 
-    cursor.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
-            balance INTEGER DEFAULT 0,
-            referrals INTEGER DEFAULT 0,
-            referred_by INTEGER DEFAULT NULL,
-            last_daily TEXT DEFAULT NULL
+            points INTEGER DEFAULT 0,
+            referred_by INTEGER,
+            created_at TEXT
         )
     """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            link TEXT NOT NULL,
-            reward INTEGER NOT NULL,
-            active INTEGER DEFAULT 1
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS completed_tasks (
             user_id INTEGER,
-            task_id INTEGER,
-            completed_at TEXT,
-            PRIMARY KEY (user_id, task_id)
+            points INTEGER,
+            usdt REAL,
+            wallet TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
         )
     """)
 
-    db.commit()
-    db.close()
+    conn.commit()
+    conn.close()
 
 
-# ==================================================
+# =========================
 # المستخدم
-# ==================================================
-
-def ensure_user(user_id, username, first_name):
-
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute(
-        "SELECT user_id FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-
-    if not cursor.fetchone():
-
-        cursor.execute(
-            """
-            INSERT INTO users
-            (user_id, username, first_name, balance, referrals)
-            VALUES (?, ?, ?, 0, 0)
-            """,
-            (
-                user_id,
-                username,
-                first_name,
-            )
-        )
-
-    else:
-
-        cursor.execute(
-            """
-            UPDATE users
-            SET username = ?,
-                first_name = ?
-            WHERE user_id = ?
-            """,
-            (
-                username,
-                first_name,
-                user_id,
-            )
-        )
-
-    db.commit()
-    db.close()
-
+# =========================
 
 def get_user(user_id):
+    conn = get_db()
 
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute(
-        """
-        SELECT balance, referrals, referred_by, last_daily
-        FROM users
-        WHERE user_id = ?
-        """,
+    user = conn.execute(
+        "SELECT * FROM users WHERE user_id = ?",
         (user_id,)
-    )
+    ).fetchone()
 
-    result = cursor.fetchone()
+    conn.close()
 
-    db.close()
-
-    return result
+    return user
 
 
-# ==================================================
-# /start
-# ==================================================
+def create_user(
+    user_id,
+    username,
+    first_name,
+    referred_by=None
+):
+    conn = get_db()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user = update.effective_user
-    user_id = user.id
-
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute(
-        """
-        SELECT user_id, referred_by
-        FROM users
-        WHERE user_id = ?
-        """,
+    existing = conn.execute(
+        "SELECT user_id FROM users WHERE user_id = ?",
         (user_id,)
-    )
+    ).fetchone()
 
-    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return False
 
-    referral_added = False
-
-    # مستخدم جديد
-    if not existing:
-
-        cursor.execute(
-            """
-            INSERT INTO users
-            (user_id, username, first_name, balance, referrals)
-            VALUES (?, ?, ?, 0, 0)
-            """,
-            (
-                user_id,
-                user.username or "",
-                user.first_name or "",
-            )
+    conn.execute("""
+        INSERT INTO users
+        (
+            user_id,
+            username,
+            first_name,
+            points,
+            referred_by,
+            created_at
         )
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        username or "",
+        first_name or "",
+        WELCOME_BONUS,
+        referred_by,
+        datetime.now().isoformat(),
+    ))
 
-        existing_referred_by = None
+    # مكافأة صاحب رابط الإحالة
+    if referred_by and referred_by != user_id:
 
-    else:
+        # نتأكد أن صاحب الإحالة موجود
+        referrer = conn.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (referred_by,)
+        ).fetchone()
 
-        existing_referred_by = existing[1]
+        if referrer:
+            conn.execute("""
+                UPDATE users
+                SET points = points + ?
+                WHERE user_id = ?
+            """, (
+                REFERRAL_BONUS,
+                referred_by
+            ))
 
-        cursor.execute(
-            """
-            UPDATE users
-            SET username = ?,
-                first_name = ?
-            WHERE user_id = ?
-            """,
-            (
-                user.username or "",
-                user.first_name or "",
-                user_id,
-            )
-        )
+    conn.commit()
+    conn.close()
 
-    # ==================================================
-    # الإحالة
-    # ==================================================
+    return True
 
-    if context.args:
 
-        try:
+def add_points(user_id, points):
+    conn = get_db()
 
-            referrer_id = int(context.args[0])
+    conn.execute("""
+        UPDATE users
+        SET points = points + ?
+        WHERE user_id = ?
+    """, (
+        points,
+        user_id
+    ))
 
-            if (
-                referrer_id != user_id
-                and existing_referred_by is None
-            ):
+    conn.commit()
+    conn.close()
 
-                cursor.execute(
-                    """
-                    SELECT user_id
-                    FROM users
-                    WHERE user_id = ?
-                    """,
-                    (referrer_id,)
-                )
 
-                referrer_exists = cursor.fetchone()
+# =========================
+# لوحة الأزرار
+# =========================
 
-                if referrer_exists:
+def main_keyboard():
 
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET referred_by = ?
-                        WHERE user_id = ?
-                        """,
-                        (
-                            referrer_id,
-                            user_id,
-                        )
-                    )
-
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET balance = balance + ?,
-                            referrals = referrals + 1
-                        WHERE user_id = ?
-                        """,
-                        (
-                            REFERRAL_BONUS,
-                            referrer_id,
-                        )
-                    )
-
-                    referral_added = True
-
-        except ValueError:
-            pass
-
-    db.commit()
-    db.close()
-
-    # ==================================================
-    # القائمة
-    # ==================================================
-
-    keyboard = [
-
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "💰 رصيدي",
                 callback_data="balance"
             ),
             InlineKeyboardButton(
-                "🎯 المهام",
-                callback_data="tasks"
-            ),
-        ],
-
-        [
-            InlineKeyboardButton(
-                "🎁 المكافأة اليومية",
-                callback_data="daily"
-            ),
-        ],
-
-        [
-            InlineKeyboardButton(
-                "👥 دعوة الأصدقاء",
+                "👥 الإحالة",
                 callback_data="referral"
             ),
+        ],
+        [
             InlineKeyboardButton(
-                "💳 السحب",
+                "🎁 المهام",
+                callback_data="tasks"
+            ),
+            InlineKeyboardButton(
+                "💸 السحب",
                 callback_data="withdraw"
             ),
         ],
-
         [
             InlineKeyboardButton(
-                "📊 الإحصائيات",
+                "📊 إحصائياتي",
                 callback_data="stats"
             ),
         ],
-    ]
+    ])
 
-    # لوحة الأدمن
-    if user_id == ADMIN_ID:
 
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    "👑 لوحة الأدمن",
-                    callback_data="admin"
-                )
-            ]
-        )
+# =========================
+# /start
+# =========================
 
-    message = (
-        "🤖 أهلاً بك في FarisEarnBot 💎\n\n"
-        "💎 اكسب النقاط من المهام ودعوة الأصدقاء.\n\n"
-        "اختر من القائمة:"
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user = update.effective_user
+
+    referred_by = None
+
+    if context.args:
+
+        try:
+            referred_by = int(context.args[0])
+
+        except ValueError:
+            referred_by = None
+
+    created = create_user(
+        user.id,
+        user.username,
+        user.first_name,
+        referred_by
     )
 
-    if referral_added:
+    text = f"""
+👋 أهلاً بك {user.first_name}
 
-        message += (
-            "\n\n🎉 تم تسجيل الإحالة بنجاح!"
-        )
+🎉 مرحباً بك في Faris Earn
+
+💰 اربح النقاط من خلال المهام والإحالات.
+
+💎 نظام التحويل:
+
+⭐ 5000 نقطة = 1 USDT
+
+💸 الحد الأدنى للسحب:
+
+5000 نقطة = 1 USDT
+
+🎁 مكافأة التسجيل:
+
+{WELCOME_BONUS} نقطة
+
+👥 مكافأة الإحالة:
+
+{REFERRAL_BONUS} نقطة
+
+اختر من القائمة 👇
+"""
 
     await update.message.reply_text(
-        message,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        text,
+        reply_markup=main_keyboard()
     )
 
 
-# ==================================================
-# عرض المهام
-# ==================================================
+# =========================
+# الرصيد
+# =========================
 
-async def show_tasks(query, user_id):
-
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute(
-        """
-        SELECT id, title, link, reward
-        FROM tasks
-        WHERE active = 1
-        ORDER BY id DESC
-        """
-    )
-
-    tasks = cursor.fetchall()
-
-    if not tasks:
-
-        db.close()
-
-        await query.edit_message_text(
-            "🎯 المهام\n\n"
-            "❌ لا توجد مهام متاحة حاليًا."
-        )
-
-        return
-
-    keyboard = []
-
-    for task_id, title, link, reward in tasks:
-
-        cursor.execute(
-            """
-            SELECT 1
-            FROM completed_tasks
-            WHERE user_id = ?
-            AND task_id = ?
-            """,
-            (
-                user_id,
-                task_id
-            )
-        )
-
-        completed = cursor.fetchone()
-
-        if completed:
-
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        f"✅ {title}",
-                        callback_data="already_done"
-                    )
-                ]
-            )
-
-        else:
-
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        f"🎯 {title} (+{reward})",
-                        callback_data=f"task_{task_id}"
-                    )
-                ]
-            )
-
-    db.close()
-
-    await query.edit_message_text(
-        "🎯 المهام المتاحة\n\n"
-        "اختر مهمة للحصول على التفاصيل:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ==================================================
-# لوحة الأدمن
-# ==================================================
-
-async def admin_panel(query):
-
-    keyboard = [
-
-        [
-            InlineKeyboardButton(
-                "➕ إضافة مهمة",
-                callback_data="add_task"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "📋 إدارة المهام",
-                callback_data="manage_tasks"
-            )
-        ],
-
-    ]
-
-    await query.edit_message_text(
-        "👑 لوحة الأدمن\n\n"
-        "اختر العملية المطلوبة:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ==================================================
-# الأزرار
-# ==================================================
-
-async def buttons(
+async def balance(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -468,708 +297,634 @@ async def buttons(
 
     await query.answer()
 
-    user_id = query.from_user.id
+    user = get_user(query.from_user.id)
 
-    ensure_user(
-        user_id,
-        query.from_user.username or "",
-        query.from_user.first_name or ""
+    if not user:
+
+        await query.message.reply_text(
+            "❌ لم يتم العثور على حسابك."
+        )
+
+        return
+
+    points = user["points"]
+
+    usdt = points / POINTS_PER_USDT
+
+    text = f"""
+💰 رصيدك
+
+⭐ النقاط:
+{points:,}
+
+💵 القيمة:
+
+{usdt:.4f} USDT
+
+📌 نظام التحويل:
+
+5000 نقطة = 1 USDT
+
+💸 الحد الأدنى للسحب:
+
+5000 نقطة = 1 USDT
+"""
+
+    await query.message.reply_text(
+        text,
+        reply_markup=main_keyboard()
     )
 
-    # ==================================================
-    # الرصيد
-    # ==================================================
 
-    if query.data == "balance":
+# =========================
+# الإحالة
+# =========================
 
-        user_data = get_user(user_id)
-
-        balance = (
-            user_data[0]
-            if user_data
-            else 0
-        )
-
-        await query.edit_message_text(
-            "💰 رصيدك\n\n"
-            f"💎 الرصيد الحالي: {balance} نقطة"
-        )
-
-    # ==================================================
-    # المهام
-    # ==================================================
-
-    elif query.data == "tasks":
-
-        await show_tasks(
-            query,
-            user_id
-        )
-
-    # ==================================================
-    # المهمة مكتملة
-    # ==================================================
-
-    elif query.data == "already_done":
-
-        await query.answer(
-            "✅ حصلت على مكافأة هذه المهمة مسبقًا.",
-            show_alert=True
-        )
-
-    # ==================================================
-    # تفاصيل المهمة
-    # ==================================================
-
-    elif query.data.startswith("task_"):
-
-        task_id = int(
-            query.data.split("_")[1]
-        )
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            """
-            SELECT title, link, reward
-            FROM tasks
-            WHERE id = ?
-            AND active = 1
-            """,
-            (task_id,)
-        )
-
-        task = cursor.fetchone()
-
-        db.close()
-
-        if not task:
-
-            await query.edit_message_text(
-                "❌ هذه المهمة غير متاحة."
-            )
-
-            return
-
-        title, link, reward = task
-
-        keyboard = [
-
-            [
-                InlineKeyboardButton(
-                    "🔗 فتح المهمة",
-                    url=link
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    "✅ تحقق واستلام النقاط",
-                    callback_data=f"claim_{task_id}"
-                )
-            ],
-
-        ]
-
-        await query.edit_message_text(
-            f"🎯 {title}\n\n"
-            f"💎 المكافأة: {reward} نقطة\n\n"
-            "1️⃣ اشترك في القناة.\n"
-            "2️⃣ اضغط «تحقق واستلام النقاط».\n\n"
-            "⚠️ لن تُضاف النقاط إلا بعد التحقق من الاشتراك.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    # ==================================================
-    # استلام النقاط + التحقق من الاشتراك
-    # ==================================================
-
-    elif query.data.startswith("claim_"):
-
-        task_id = int(
-            query.data.split("_")[1]
-        )
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            """
-            SELECT title, reward, link
-            FROM tasks
-            WHERE id = ?
-            AND active = 1
-            """,
-            (task_id,)
-        )
-
-        task = cursor.fetchone()
-
-        if not task:
-
-            db.close()
-
-            await query.edit_message_text(
-                "❌ هذه المهمة غير متاحة."
-            )
-
-            return
-
-        title, reward, link = task
-
-        # ==================================================
-        # التحقق من الاشتراك
-        # ==================================================
-
-        try:
-
-            member = await context.bot.get_chat_member(
-                chat_id=CHANNEL_USERNAME,
-                user_id=user_id
-            )
-
-            if member.status in (
-                "left",
-                "kicked"
-            ):
-
-                db.close()
-
-                keyboard = [
-                    [
-                        InlineKeyboardButton(
-                            "🔗 الاشتراك في القناة",
-                            url=link
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🔄 تحقق مرة أخرى",
-                            callback_data=f"claim_{task_id}"
-                        )
-                    ],
-                ]
-
-                await query.edit_message_text(
-                    "❌ لم يتم العثور على اشتراكك في القناة.\n\n"
-                    "اشترك أولًا ثم اضغط «تحقق مرة أخرى».",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-
-                return
-
-        except Exception as e:
-
-            db.close()
-
-            logging.error(
-                f"Subscription check error: {e}"
-            )
-
-            await query.edit_message_text(
-                "⚠️ تعذر التحقق من الاشتراك حاليًا.\n\n"
-                "تأكد أن البوت مشرف في القناة ثم حاول مرة أخرى."
-            )
-
-            return
-
-        # ==================================================
-        # منع تكرار المكافأة
-        # ==================================================
-
-        cursor.execute(
-            """
-            SELECT 1
-            FROM completed_tasks
-            WHERE user_id = ?
-            AND task_id = ?
-            """,
-            (
-                user_id,
-                task_id
-            )
-        )
-
-        if cursor.fetchone():
-
-            db.close()
-
-            await query.edit_message_text(
-                "❌ حصلت على مكافأة هذه المهمة مسبقًا."
-            )
-
-            return
-
-        # ==================================================
-        # تسجيل المهمة كمكتملة
-        # ==================================================
-
-        cursor.execute(
-            """
-            INSERT INTO completed_tasks
-            (user_id, task_id, completed_at)
-            VALUES (?, ?, ?)
-            """,
-            (
-                user_id,
-                task_id,
-                datetime.utcnow().isoformat()
-            )
-        )
-
-        # ==================================================
-        # إضافة النقاط
-        # ==================================================
-
-        cursor.execute(
-            """
-            UPDATE users
-            SET balance = balance + ?
-            WHERE user_id = ?
-            """,
-            (
-                reward,
-                user_id
-            )
-        )
-
-        db.commit()
-        db.close()
-
-        await query.edit_message_text(
-            "🎉 تم التحقق بنجاح!\n\n"
-            f"🎯 المهمة: {title}\n"
-            f"💎 المكافأة: {reward} نقطة\n\n"
-            "✅ اشتراكك مؤكد.\n"
-            "💰 تمت إضافة النقاط إلى رصيدك."
-        )
-
-    # ==================================================
-    # المكافأة اليومية
-    # ==================================================
-
-    elif query.data == "daily":
-
-        user_data = get_user(user_id)
-
-        last_daily = (
-            user_data[3]
-            if user_data
-            else None
-        )
-
-        now = datetime.utcnow()
-
-        if last_daily:
-
-            try:
-
-                last_time = datetime.fromisoformat(
-                    last_daily
-                )
-
-                next_time = (
-                    last_time +
-                    timedelta(hours=24)
-                )
-
-                if now < next_time:
-
-                    remaining = (
-                        next_time - now
-                    )
-
-                    hours = int(
-                        remaining.total_seconds()
-                        // 3600
-                    )
-
-                    minutes = int(
-                        (
-                            remaining.total_seconds()
-                            % 3600
-                        ) // 60
-                    )
-
-                    await query.edit_message_text(
-                        "🎁 المكافأة اليومية\n\n"
-                        "❌ لقد حصلت على مكافأتك اليوم.\n\n"
-                        f"⏳ المكافأة القادمة بعد: "
-                        f"{hours} ساعة و {minutes} دقيقة."
-                    )
-
-                    return
-
-            except ValueError:
-                pass
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            """
-            UPDATE users
-            SET balance = balance + ?,
-                last_daily = ?
-            WHERE user_id = ?
-            """,
-            (
-                DAILY_BONUS,
-                now.isoformat(),
-                user_id
-            )
-        )
-
-        db.commit()
-        db.close()
-
-        await query.edit_message_text(
-            "🎉 مبروك!\n\n"
-            f"🎁 حصلت على {DAILY_BONUS} نقطة.\n"
-            "💎 تمت إضافة النقاط إلى رصيدك."
-        )
-
-    # ==================================================
-    # الإحالة
-    # ==================================================
-
-    elif query.data == "referral":
-
-        bot = await context.bot.get_me()
-
-        await query.edit_message_text(
-            "👥 دعوة الأصدقاء\n\n"
-            "🔗 رابط دعوتك الخاص:\n\n"
-            f"https://t.me/{bot.username}?start={user_id}\n\n"
-            f"🎁 تحصل على {REFERRAL_BONUS} نقطة "
-            "عن كل إحالة ناجحة."
-        )
-
-    # ==================================================
-    # السحب
-    # ==================================================
-
-    elif query.data == "withdraw":
-
-        user_data = get_user(user_id)
-
-        balance = (
-            user_data[0]
-            if user_data
-            else 0
-        )
-
-        await query.edit_message_text(
-            "💳 السحب\n\n"
-            f"💎 رصيدك: {balance} نقطة\n"
-            f"📌 الحد الأدنى: {MIN_WITHDRAW} نقطة\n\n"
-            "سيتم تجهيز نظام السحب قريبًا."
-        )
-
-    # ==================================================
-    # الإحصائيات
-    # ==================================================
-
-    elif query.data == "stats":
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM users"
-        )
-
-        users_count = cursor.fetchone()[0]
-
-        cursor.execute(
-            "SELECT SUM(balance) FROM users"
-        )
-
-        total_balance = (
-            cursor.fetchone()[0]
-            or 0
-        )
-
-        db.close()
-
-        user_data = get_user(user_id)
-
-        balance = (
-            user_data[0]
-            if user_data
-            else 0
-        )
-
-        referrals = (
-            user_data[1]
-            if user_data
-            else 0
-        )
-
-        await query.edit_message_text(
-            "📊 إحصائياتك\n\n"
-            f"💎 رصيدك: {balance} نقطة\n"
-            f"👥 إحالاتك: {referrals}\n\n"
-            f"👤 إجمالي المستخدمين: {users_count}\n"
-            f"💰 إجمالي النقاط: {total_balance}"
-        )
-
-    # ==================================================
-    # لوحة الأدمن
-    # ==================================================
-
-    elif query.data == "admin":
-
-        if user_id != ADMIN_ID:
-
-            await query.edit_message_text(
-                "⛔ غير مصرح لك."
-            )
-
-            return
-
-        await admin_panel(query)
-
-    # ==================================================
-    # إضافة مهمة
-    # ==================================================
-
-    elif query.data == "add_task":
-
-        if user_id != ADMIN_ID:
-            return
-
-        context.user_data["admin_action"] = "task_title"
-
-        await query.edit_message_text(
-            "➕ إضافة مهمة\n\n"
-            "أرسل الآن اسم المهمة.\n\n"
-            "مثال:\n"
-            "📢 الاشتراك في قناة Fares"
-        )
-
-    # ==================================================
-    # إدارة المهام
-    # ==================================================
-
-    elif query.data == "manage_tasks":
-
-        if user_id != ADMIN_ID:
-            return
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            """
-            SELECT id, title, reward, active
-            FROM tasks
-            ORDER BY id DESC
-            """
-        )
-
-        tasks = cursor.fetchall()
-
-        db.close()
-
-        if not tasks:
-
-            await query.edit_message_text(
-                "📋 إدارة المهام\n\n"
-                "❌ لا توجد مهام حتى الآن."
-            )
-
-            return
-
-        text = "📋 المهام الحالية:\n\n"
-
-        for task_id, title, reward, active in tasks:
-
-            status = (
-                "🟢"
-                if active
-                else "🔴"
-            )
-
-            text += (
-                f"{status} #{task_id} {title}\n"
-                f"💎 المكافأة: {reward} نقطة\n\n"
-            )
-
-        await query.edit_message_text(text)
-
-
-# ==================================================
-# استقبال بيانات المهمة
-# ==================================================
-
-async def admin_messages(
+async def referral(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
+    query = update.callback_query
 
-    if user_id != ADMIN_ID:
-        return
+    await query.answer()
 
-    action = context.user_data.get(
-        "admin_action"
+    bot = await context.bot.get_me()
+
+    referral_link = (
+        f"https://t.me/{bot.username}"
+        f"?start={query.from_user.id}"
     )
 
-    if not action:
+    text = f"""
+👥 نظام الإحالة
+
+🎁 اربح {REFERRAL_BONUS} نقطة
+عن كل شخص يسجل عن طريق رابطك.
+
+🔗 رابط الإحالة الخاص بك:
+
+{referral_link}
+
+📢 شارك الرابط مع أصدقائك.
+"""
+
+    await query.message.reply_text(
+        text,
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
+# المهام
+# =========================
+
+async def tasks(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    text = """
+🎁 المهام
+
+حالياً يمكنك الربح من خلال:
+
+👥 دعوة الأصدقاء
+
+🎁 مكافأة التسجيل
+
+⚙️ سيتم إضافة المزيد من المهام لاحقاً.
+"""
+
+    await query.message.reply_text(
+        text,
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
+# الإحصائيات
+# =========================
+
+async def stats(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user = get_user(query.from_user.id)
+
+    if not user:
         return
 
-    message = update.message.text.strip()
+    conn = get_db()
 
-    # ==================================================
-    # اسم المهمة
-    # ==================================================
+    referrals = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM users
+        WHERE referred_by = ?
+    """, (
+        query.from_user.id,
+    )).fetchone()["count"]
 
-    if action == "task_title":
+    conn.close()
 
-        context.user_data["task_title"] = message
+    points = user["points"]
 
-        context.user_data["admin_action"] = "task_link"
+    usdt = points / POINTS_PER_USDT
+
+    text = f"""
+📊 إحصائياتك
+
+⭐ النقاط:
+
+{points:,}
+
+👥 عدد الإحالات:
+
+{referrals}
+
+💵 القيمة:
+
+{usdt:.4f} USDT
+"""
+
+    await query.message.reply_text(
+        text,
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
+# السحب
+# =========================
+
+async def withdraw(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user = get_user(query.from_user.id)
+
+    if not user:
+        return
+
+    points = user["points"]
+
+    if points < MIN_WITHDRAW_POINTS:
+
+        missing = (
+            MIN_WITHDRAW_POINTS - points
+        )
+
+        text = f"""
+❌ لا يمكنك السحب حالياً.
+
+⭐ رصيدك:
+
+{points:,} نقطة
+
+💸 الحد الأدنى:
+
+{MIN_WITHDRAW_POINTS:,} نقطة
+
+💵 الحد الأدنى:
+
+1 USDT
+
+📌 تحتاج إلى:
+
+{missing:,} نقطة إضافية.
+"""
+
+        await query.message.reply_text(
+            text,
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+    context.user_data[
+        "withdraw_step"
+    ] = "wallet"
+
+    await query.message.reply_text(
+        """
+💳 طلب السحب
+
+أرسل الآن عنوان محفظة USDT
+التي تريد استلام المبلغ عليها.
+
+⚠️ تأكد من صحة العنوان قبل الإرسال.
+"""
+    )
+
+
+# =========================
+# استقبال المحفظة
+# =========================
+
+async def receive_wallet(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user = update.effective_user
+
+    if context.user_data.get(
+        "withdraw_step"
+    ) != "wallet":
+
+        return
+
+    wallet = update.message.text.strip()
+
+    if len(wallet) < 10:
 
         await update.message.reply_text(
-            "🔗 ممتاز.\n\n"
-            "أرسل الآن رابط المهمة.\n\n"
-            "مثال:\n"
-            "https://t.me/farehes"
+            "❌ عنوان المحفظة يبدو غير صحيح.\n"
+            "أرسل عنواناً صحيحاً."
         )
 
-    # ==================================================
-    # رابط المهمة
-    # ==================================================
+        return
 
-    elif action == "task_link":
+    db_user = get_user(user.id)
 
-        if not (
-            message.startswith("https://t.me/")
-            or message.startswith("http://t.me/")
-        ):
+    if not db_user:
+        return
 
-            await update.message.reply_text(
-                "❌ أرسل رابط تيليجرام صحيح يبدأ بـ:\n"
-                "https://t.me/"
-            )
+    points = db_user["points"]
 
-            return
-
-        context.user_data["task_link"] = message
-
-        context.user_data["admin_action"] = "task_reward"
-
-        await update.message.reply_text(
-            "💎 أرسل الآن عدد النقاط للمهمة.\n\n"
-            "مثال:\n"
-            "100"
-        )
-
-    # ==================================================
-    # نقاط المهمة
-    # ==================================================
-
-    elif action == "task_reward":
-
-        try:
-
-            reward = int(message)
-
-            if reward <= 0:
-                raise ValueError
-
-        except ValueError:
-
-            await update.message.reply_text(
-                "❌ أدخل رقمًا صحيحًا أكبر من صفر.\n\n"
-                "مثال: 100"
-            )
-
-            return
-
-        title = context.user_data["task_title"]
-        link = context.user_data["task_link"]
-
-        db = get_db()
-        cursor = db.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO tasks
-            (title, link, reward, active)
-            VALUES (?, ?, ?, 1)
-            """,
-            (
-                title,
-                link,
-                reward
-            )
-        )
-
-        db.commit()
-        db.close()
+    if points < MIN_WITHDRAW_POINTS:
 
         context.user_data.clear()
 
         await update.message.reply_text(
-            "✅ تم إنشاء المهمة بنجاح!\n\n"
-            f"🎯 المهمة: {title}\n"
-            f"💎 المكافأة: {reward} نقطة\n"
-            f"🔗 الرابط: {link}\n\n"
-            "يمكن للمستخدمين الآن رؤية المهمة."
+            "❌ رصيدك أصبح أقل من الحد الأدنى للسحب.",
+            reply_markup=main_keyboard()
         )
 
+        return
 
-# ==================================================
+    usdt = points / POINTS_PER_USDT
+
+    conn = get_db()
+
+    conn.execute("""
+        INSERT INTO withdrawals
+        (
+            user_id,
+            points,
+            usdt,
+            wallet,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user.id,
+        points,
+        usdt,
+        wallet,
+        "pending",
+        datetime.now().isoformat()
+    ))
+
+    # تصفير الرصيد بعد تسجيل الطلب
+    conn.execute("""
+        UPDATE users
+        SET points = 0
+        WHERE user_id = ?
+    """, (
+        user.id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        f"""
+✅ تم تسجيل طلب السحب.
+
+💵 المبلغ:
+
+{usdt:.4f} USDT
+
+⭐ النقاط:
+
+{points:,}
+
+💳 المحفظة:
+
+{wallet}
+
+⏳ الحالة:
+
+قيد المراجعة
+
+سيتم مراجعة الطلب من الإدارة.
+""",
+        reply_markup=main_keyboard()
+    )
+
+    # إرسال إشعار للإدارة
+    if ADMIN_ID:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"""
+🚨 طلب سحب جديد
+
+👤 المستخدم:
+
+{user.first_name}
+
+🆔 ID:
+
+{user.id}
+
+⭐ النقاط:
+
+{points:,}
+
+💵 المبلغ:
+
+{usdt:.4f} USDT
+
+💳 المحفظة:
+
+{wallet}
+
+⏳ الحالة:
+
+Pending
+"""
+            )
+
+        except Exception as e:
+
+            logger.error(
+                f"Admin notification error: {e}"
+            )
+
+
+# =========================
+# لوحة الإدارة
+# =========================
+
+async def admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ غير مصرح لك."
+        )
+
+        return
+
+    conn = get_db()
+
+    users = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM users
+    """).fetchone()["count"]
+
+    pending = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM withdrawals
+        WHERE status = 'pending'
+    """).fetchone()["count"]
+
+    conn.close()
+
+    await update.message.reply_text(
+        f"""
+👑 لوحة الإدارة
+
+👥 عدد المستخدمين:
+
+{users}
+
+💸 طلبات السحب المعلقة:
+
+{pending}
+
+💎 نظام التحويل:
+
+5000 نقطة = 1 USDT
+"""
+    )
+
+
+# =========================
+# إضافة نقاط
+# =========================
+
+async def addpoints(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ غير مصرح لك."
+        )
+
+        return
+
+    if len(context.args) != 2:
+
+        await update.message.reply_text(
+            "الاستخدام:\n"
+            "/addpoints USER_ID POINTS"
+        )
+
+        return
+
+    try:
+
+        user_id = int(context.args[0])
+
+        points = int(context.args[1])
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ البيانات غير صحيحة."
+        )
+
+        return
+
+    user = get_user(user_id)
+
+    if not user:
+
+        await update.message.reply_text(
+            "❌ المستخدم غير موجود."
+        )
+
+        return
+
+    add_points(
+        user_id,
+        points
+    )
+
+    await update.message.reply_text(
+        f"""
+✅ تمت إضافة النقاط.
+
+👤 المستخدم:
+
+{user_id}
+
+⭐ النقاط المضافة:
+
+{points:,}
+"""
+    )
+
+
+# =========================
+# إلغاء
+# =========================
+
+async def cancel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ تم إلغاء العملية.",
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================
 # تشغيل البوت
-# ==================================================
+# =========================
 
 def main():
 
     if not TOKEN:
 
         raise ValueError(
-            "BOT_TOKEN غير موجود"
+            "BOT_TOKEN غير موجود في Environment Variables"
         )
 
     init_db()
 
-    app = (
+    application = (
         Application
         .builder()
         .token(TOKEN)
         .build()
     )
 
-    app.add_handler(
+    # الأوامر
+    application.add_handler(
         CommandHandler(
             "start",
             start
         )
     )
 
-    app.add_handler(
-        CallbackQueryHandler(
-            buttons
+    application.add_handler(
+        CommandHandler(
+            "admin",
+            admin
         )
     )
 
-    app.add_handler(
+    application.add_handler(
+        CommandHandler(
+            "addpoints",
+            addpoints
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "cancel",
+            cancel
+        )
+    )
+
+    # الأزرار
+    application.add_handler(
+        CallbackQueryHandler(
+            balance,
+            pattern="^balance$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            referral,
+            pattern="^referral$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            tasks,
+            pattern="^tasks$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            withdraw,
+            pattern="^withdraw$"
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            stats,
+            pattern="^stats$"
+        )
+    )
+
+    # استقبال عنوان المحفظة
+    application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            admin_messages
+            receive_wallet
         )
     )
 
     print(
-        "FarisEarnBot is running..."
+        "Faris Earn Bot is running..."
     )
 
-    app.run_polling()
+    application.run_polling()
 
+
+# =========================
+# START
+# =========================
 
 if __name__ == "__main__":
     main()
