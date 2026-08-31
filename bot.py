@@ -1,6 +1,7 @@
 import os
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,7 +15,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DB_FILE = "faris_earn.db"
+
 REFERRAL_BONUS = 100
+DAILY_BONUS = 50
 MIN_WITHDRAW = 1000
 
 logging.basicConfig(
@@ -22,6 +25,10 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+
+# =========================
+# قاعدة البيانات
+# =========================
 
 def get_db():
     return sqlite3.connect(DB_FILE)
@@ -38,9 +45,18 @@ def init_db():
             first_name TEXT,
             balance INTEGER DEFAULT 0,
             referrals INTEGER DEFAULT 0,
-            referred_by INTEGER DEFAULT NULL
+            referred_by INTEGER DEFAULT NULL,
+            last_daily TEXT DEFAULT NULL
         )
     """)
+
+    # إضافة العمود إذا كانت قاعدة البيانات القديمة لا تحتوي عليه
+    try:
+        cursor.execute(
+            "ALTER TABLE users ADD COLUMN last_daily TEXT DEFAULT NULL"
+        )
+    except sqlite3.OperationalError:
+        pass
 
     db.commit()
     db.close()
@@ -75,7 +91,7 @@ def get_user(user_id):
 
     cursor.execute(
         """
-        SELECT balance, referrals, referred_by
+        SELECT balance, referrals, referred_by, last_daily
         FROM users
         WHERE user_id = ?
         """,
@@ -88,6 +104,10 @@ def get_user(user_id):
     return result
 
 
+# =========================
+# /start
+# =========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
@@ -96,7 +116,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     cursor = db.cursor()
 
-    # إنشاء المستخدم إذا لم يكن موجودًا
     cursor.execute(
         "SELECT user_id, referred_by FROM users WHERE user_id = ?",
         (user_id,)
@@ -122,9 +141,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         existing_referred_by = None
 
     else:
+
         existing_referred_by = existing[1]
 
-        # تحديث بيانات المستخدم
         cursor.execute(
             """
             UPDATE users
@@ -139,18 +158,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     referral_added = False
-    referrer_id = None
 
-    # معالجة رابط الإحالة
     if context.args:
 
         try:
             referrer_id = int(context.args[0])
 
-            # منع إحالة النفس
             if referrer_id != user_id:
 
-                # لا نضيف إحالة إذا كان لديه محيل سابق
                 if existing_referred_by is None:
 
                     cursor.execute(
@@ -195,6 +210,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🎯 المهام", callback_data="tasks"),
         ],
         [
+            InlineKeyboardButton("🎁 المكافأة اليومية", callback_data="daily"),
+        ],
+        [
             InlineKeyboardButton("👥 دعوة الأصدقاء", callback_data="referral"),
             InlineKeyboardButton("💳 السحب", callback_data="withdraw"),
         ],
@@ -218,15 +236,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if referral_added:
-        message += (
-            "\n\n🎉 تم تسجيلك عن طريق رابط إحالة!"
-        )
+        message += "\n\n🎉 تم تسجيل الإحالة بنجاح!"
 
     await update.message.reply_text(
         message,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
+
+# =========================
+# الأزرار
+# =========================
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -241,6 +261,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query.from_user.first_name or ""
     )
 
+    # =========================
+    # الرصيد
+    # =========================
+
     if query.data == "balance":
 
         user_data = get_user(user_id)
@@ -251,6 +275,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💎 الرصيد الحالي: {balance} نقطة"
         )
 
+    # =========================
+    # المهام
+    # =========================
+
     elif query.data == "tasks":
 
         text = (
@@ -258,6 +286,128 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 لا توجد مهام متاحة حاليًا.\n\n"
             "سيتم إضافة المهام قريبًا."
         )
+
+    # =========================
+    # المكافأة اليومية
+    # =========================
+
+    elif query.data == "daily":
+
+        user_data = get_user(user_id)
+
+        last_daily = user_data[3] if user_data else None
+
+        now = datetime.utcnow()
+
+        if last_daily:
+
+            try:
+                last_time = datetime.fromisoformat(last_daily)
+
+                next_time = last_time + timedelta(hours=24)
+
+                if now < next_time:
+
+                    remaining = next_time - now
+
+                    hours = int(remaining.total_seconds() // 3600)
+                    minutes = int(
+                        (remaining.total_seconds() % 3600) // 60
+                    )
+
+                    text = (
+                        "🎁 المكافأة اليومية\n\n"
+                        "❌ لقد حصلت على مكافأتك اليوم.\n\n"
+                        f"⏳ المكافأة القادمة بعد: "
+                        f"{hours} ساعة و {minutes} دقيقة."
+                    )
+
+                else:
+
+                    db = get_db()
+                    cursor = db.cursor()
+
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET balance = balance + ?,
+                            last_daily = ?
+                        WHERE user_id = ?
+                        """,
+                        (
+                            DAILY_BONUS,
+                            now.isoformat(),
+                            user_id,
+                        )
+                    )
+
+                    db.commit()
+                    db.close()
+
+                    text = (
+                        "🎉 مبروك!\n\n"
+                        f"🎁 حصلت على {DAILY_BONUS} نقطة.\n"
+                        "💎 تمت إضافة النقاط إلى رصيدك."
+                    )
+
+            except ValueError:
+
+                db = get_db()
+                cursor = db.cursor()
+
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET balance = balance + ?,
+                        last_daily = ?
+                    WHERE user_id = ?
+                    """,
+                    (
+                        DAILY_BONUS,
+                        now.isoformat(),
+                        user_id,
+                    )
+                )
+
+                db.commit()
+                db.close()
+
+                text = (
+                    "🎉 مبروك!\n\n"
+                    f"🎁 حصلت على {DAILY_BONUS} نقطة."
+                )
+
+        else:
+
+            db = get_db()
+            cursor = db.cursor()
+
+            cursor.execute(
+                """
+                UPDATE users
+                SET balance = balance + ?,
+                    last_daily = ?
+                WHERE user_id = ?
+                """,
+                (
+                    DAILY_BONUS,
+                    now.isoformat(),
+                    user_id,
+                )
+            )
+
+            db.commit()
+            db.close()
+
+            text = (
+                "🎉 مبروك!\n\n"
+                f"🎁 حصلت على {DAILY_BONUS} نقطة.\n"
+                "💎 تمت إضافة النقاط إلى رصيدك."
+            )
+
+    # =========================
+    # الإحالة
+    # =========================
 
     elif query.data == "referral":
 
@@ -267,8 +417,13 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👥 دعوة الأصدقاء\n\n"
             "🔗 رابط دعوتك الخاص:\n\n"
             f"https://t.me/{bot.username}?start={user_id}\n\n"
-            f"🎁 تحصل على {REFERRAL_BONUS} نقطة عن كل إحالة ناجحة."
+            f"🎁 تحصل على {REFERRAL_BONUS} نقطة "
+            "عن كل إحالة ناجحة."
         )
+
+    # =========================
+    # السحب
+    # =========================
 
     elif query.data == "withdraw":
 
@@ -293,6 +448,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ رصيدك غير كافٍ للسحب حاليًا."
             )
 
+    # =========================
+    # الإحصائيات
+    # =========================
+
     elif query.data == "stats":
 
         db = get_db()
@@ -305,6 +464,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_balance = cursor.fetchone()[0] or 0
 
         user_data = get_user(user_id)
+
         referrals = user_data[1] if user_data else 0
         balance = user_data[0] if user_data else 0
 
@@ -317,6 +477,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 إجمالي المستخدمين: {users_count}\n"
             f"💰 إجمالي النقاط: {total_balance}"
         )
+
+    # =========================
+    # الأدمن
+    # =========================
 
     elif query.data == "admin":
 
@@ -350,6 +514,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(text)
 
+
+# =========================
+# تشغيل البوت
+# =========================
 
 def main():
 
