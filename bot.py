@@ -26,9 +26,11 @@ DB_FILE = "faris_earn.db"
 # نظام النقاط
 # =========================
 
-POINTS_PER_USDT = 5000
+# 1000 نقطة = 1 USDT
+POINTS_PER_USDT = 1000
 
-MIN_WITHDRAW_POINTS = 5000
+# الحد الأدنى للسحب = 1000 نقطة = 1 USDT
+MIN_WITHDRAW_POINTS = 1000
 
 WELCOME_BONUS = 100
 
@@ -50,7 +52,6 @@ TELEGRAM_CHANNEL_LINK = "https://t.me/farehes"
 
 YOUTUBE_CHANNEL_LINK = "https://www.youtube.com/@VsdGggf"
 
-
 # =========================
 # Logging
 # =========================
@@ -61,7 +62,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
 
 # =========================
 # قاعدة البيانات
@@ -103,8 +103,6 @@ def init_db():
             created_at TEXT
         )
     """)
-
-    # تحديث قاعدة البيانات القديمة
 
     columns = [
         row["name"]
@@ -312,10 +310,10 @@ async def start(
 💰 اربح النقاط من خلال المهام والإحالات.
 
 💎 نظام التحويل:
-⭐ 5000 نقطة = 1 USDT
+⭐ 1000 نقطة = 1 USDT
 
 💸 الحد الأدنى للسحب:
-5000 نقطة = 1 USDT
+1000 نقطة = 1 USDT
 
 🎁 مكافأة التسجيل:
 {WELCOME_BONUS} نقطة
@@ -377,10 +375,10 @@ async def balance(
 {usdt:.4f} USDT
 
 📌 نظام التحويل:
-5000 نقطة = 1 USDT
+1000 نقطة = 1 USDT
 
 💸 الحد الأدنى للسحب:
-5000 نقطة = 1 USDT
+1000 نقطة = 1 USDT
 """
 
     await query.message.reply_text(
@@ -1052,7 +1050,7 @@ async def admin(
 {pending}
 
 💎 التحويل:
-5000 نقطة = 1 USDT
+1000 نقطة = 1 USDT
 
 🎁 التسجيل:
 {WELCOME_BONUS} نقطة
