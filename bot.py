@@ -13,23 +13,23 @@ from telegram.ext import (
     filters,
 )
 
-# =========================
+# =========================================================
 # الإعدادات
-# =========================
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DB_FILE = "faris_earn.db"
 
-# =========================
+# =========================================================
 # نظام النقاط
-# =========================
+# =========================================================
 
-# 1000 نقطة = 1 USDT
-POINTS_PER_USDT = 1000
+# 1000 نقطة = 1 TON
+POINTS_PER_TON = 1000
 
-# الحد الأدنى للسحب = 1000 نقطة = 1 USDT
+# الحد الأدنى للسحب = 1000 نقطة = 1 TON
 MIN_WITHDRAW_POINTS = 1000
 
 # المكافآت
@@ -39,17 +39,17 @@ CHANNEL_BONUS = 1000
 YOUTUBE_BONUS = 1000
 DAILY_BONUS = 1000
 
-# =========================
+# =========================================================
 # الروابط
-# =========================
+# =========================================================
 
 TELEGRAM_CHANNEL = "@farehes"
 TELEGRAM_CHANNEL_LINK = "https://t.me/farehes"
 YOUTUBE_CHANNEL_LINK = "https://www.youtube.com/@VsdGggf"
 
-# =========================
+# =========================================================
 # Logging
-# =========================
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -58,9 +58,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# =========================
+# =========================================================
 # قاعدة البيانات
-# =========================
+# =========================================================
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -73,6 +73,7 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
+    # المستخدمون
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -87,18 +88,22 @@ def init_db():
         )
     """)
 
+    # طلبات السحب
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             points INTEGER,
-            usdt REAL,
+            ton REAL,
             wallet TEXT,
             status TEXT DEFAULT 'pending',
-            created_at TEXT
+            tx_hash TEXT,
+            created_at TEXT,
+            processed_at TEXT
         )
     """)
 
+    # دعم قواعد البيانات القديمة
     columns = [
         row["name"]
         for row in cur.execute(
@@ -107,37 +112,66 @@ def init_db():
     ]
 
     if "channel_bonus" not in columns:
-        cur.execute(
-            "ALTER TABLE users "
-            "ADD COLUMN channel_bonus INTEGER DEFAULT 0"
-        )
+        cur.execute("""
+            ALTER TABLE users
+            ADD COLUMN channel_bonus INTEGER DEFAULT 0
+        """)
 
     if "youtube_bonus" not in columns:
-        cur.execute(
-            "ALTER TABLE users "
-            "ADD COLUMN youtube_bonus INTEGER DEFAULT 0"
-        )
+        cur.execute("""
+            ALTER TABLE users
+            ADD COLUMN youtube_bonus INTEGER DEFAULT 0
+        """)
 
     if "last_daily" not in columns:
-        cur.execute(
-            "ALTER TABLE users "
-            "ADD COLUMN last_daily TEXT"
-        )
+        cur.execute("""
+            ALTER TABLE users
+            ADD COLUMN last_daily TEXT
+        """)
+
+    withdrawal_columns = [
+        row["name"]
+        for row in cur.execute(
+            "PRAGMA table_info(withdrawals)"
+        ).fetchall()
+    ]
+
+    if "ton" not in withdrawal_columns:
+        cur.execute("""
+            ALTER TABLE withdrawals
+            ADD COLUMN ton REAL DEFAULT 0
+        """)
+
+    if "tx_hash" not in withdrawal_columns:
+        cur.execute("""
+            ALTER TABLE withdrawals
+            ADD COLUMN tx_hash TEXT
+        """)
+
+    if "processed_at" not in withdrawal_columns:
+        cur.execute("""
+            ALTER TABLE withdrawals
+            ADD COLUMN processed_at TEXT
+        """)
 
     conn.commit()
     conn.close()
 
 
-# =========================
+# =========================================================
 # المستخدم
-# =========================
+# =========================================================
 
 def get_user(user_id):
 
     conn = get_db()
 
     user = conn.execute(
-        "SELECT * FROM users WHERE user_id = ?",
+        """
+        SELECT *
+        FROM users
+        WHERE user_id = ?
+        """,
         (user_id,)
     ).fetchone()
 
@@ -156,7 +190,11 @@ def create_user(
     conn = get_db()
 
     existing = conn.execute(
-        "SELECT user_id FROM users WHERE user_id = ?",
+        """
+        SELECT user_id
+        FROM users
+        WHERE user_id = ?
+        """,
         (user_id,)
     ).fetchone()
 
@@ -194,7 +232,11 @@ def create_user(
     if referred_by and referred_by != user_id:
 
         referrer = conn.execute(
-            "SELECT user_id FROM users WHERE user_id = ?",
+            """
+            SELECT user_id
+            FROM users
+            WHERE user_id = ?
+            """,
             (referred_by,)
         ).fetchone()
 
@@ -232,9 +274,9 @@ def add_points(user_id, points):
     conn.close()
 
 
-# =========================
+# =========================================================
 # لوحة الأزرار
-# =========================
+# =========================================================
 
 def main_keyboard():
 
@@ -255,7 +297,7 @@ def main_keyboard():
                 callback_data="tasks"
             ),
             InlineKeyboardButton(
-                "💸 السحب",
+                "💎 السحب",
                 callback_data="withdraw"
             ),
         ],
@@ -268,9 +310,9 @@ def main_keyboard():
     ])
 
 
-# =========================
+# =========================================================
 # /start
-# =========================
+# =========================================================
 
 async def start(
     update: Update,
@@ -304,10 +346,10 @@ async def start(
 💰 اربح النقاط من خلال المهام والإحالات.
 
 💎 نظام التحويل:
-⭐ 1000 نقطة = 1 USDT
+⭐ 1000 نقطة = 1 TON
 
 💸 الحد الأدنى للسحب:
-1000 نقطة = 1 USDT
+1000 نقطة = 1 TON
 
 🎁 مكافأة التسجيل:
 {WELCOME_BONUS:,} نقطة
@@ -333,9 +375,9 @@ async def start(
     )
 
 
-# =========================
+# =========================================================
 # الرصيد
-# =========================
+# =========================================================
 
 async def balance(
     update: Update,
@@ -356,7 +398,7 @@ async def balance(
         return
 
     points = user["points"]
-    usdt = points / POINTS_PER_USDT
+    ton = points / POINTS_PER_TON
 
     text = f"""
 💰 رصيدك
@@ -364,14 +406,14 @@ async def balance(
 ⭐ النقاط:
 {points:,}
 
-💵 القيمة:
-{usdt:.4f} USDT
+💎 القيمة:
+{ton:.4f} TON
 
 📌 نظام التحويل:
-1000 نقطة = 1 USDT
+1000 نقطة = 1 TON
 
 💸 الحد الأدنى للسحب:
-1000 نقطة = 1 USDT
+1000 نقطة = 1 TON
 """
 
     await query.message.reply_text(
@@ -380,9 +422,9 @@ async def balance(
     )
 
 
-# =========================
+# =========================================================
 # الإحالة
-# =========================
+# =========================================================
 
 async def referral(
     update: Update,
@@ -405,8 +447,8 @@ async def referral(
 🎁 اربح {REFERRAL_BONUS:,} نقطة
 عن كل شخص يسجل عن طريق رابطك.
 
-💵 القيمة:
-{REFERRAL_BONUS / POINTS_PER_USDT:.2f} USDT
+💎 القيمة:
+{REFERRAL_BONUS / POINTS_PER_TON:.2f} TON
 
 🔗 رابط الإحالة الخاص بك:
 
@@ -421,9 +463,9 @@ async def referral(
     )
 
 
-# =========================
+# =========================================================
 # المهام
-# =========================
+# =========================================================
 
 async def tasks(
     update: Update,
@@ -504,9 +546,9 @@ async def tasks(
     )
 
 
-# =========================
+# =========================================================
 # التحقق من Telegram
-# =========================
+# =========================================================
 
 async def check_channel(
     update: Update,
@@ -515,6 +557,8 @@ async def check_channel(
 
     query = update.callback_query
     user_id = query.from_user.id
+
+    await query.answer()
 
     try:
 
@@ -594,9 +638,9 @@ async def check_channel(
         )
 
 
-# =========================
+# =========================================================
 # مكافأة YouTube
-# =========================
+# =========================================================
 
 async def youtube_bonus(
     update: Update,
@@ -652,9 +696,9 @@ async def youtube_bonus(
     )
 
 
-# =========================
+# =========================================================
 # المكافأة اليومية
-# =========================
+# =========================================================
 
 async def daily_bonus(
     update: Update,
@@ -709,8 +753,8 @@ async def daily_bonus(
 
 ⭐ +{DAILY_BONUS:,} نقطة
 
-💵 القيمة:
-{DAILY_BONUS / POINTS_PER_USDT:.2f} USDT
+💎 القيمة:
+{DAILY_BONUS / POINTS_PER_TON:.2f} TON
 
 📅 عد غداً للحصول على مكافأة جديدة.
 """,
@@ -718,9 +762,9 @@ async def daily_bonus(
     )
 
 
-# =========================
+# =========================================================
 # القائمة الرئيسية
-# =========================
+# =========================================================
 
 async def main_menu(
     update: Update,
@@ -736,9 +780,9 @@ async def main_menu(
     )
 
 
-# =========================
+# =========================================================
 # الإحصائيات
-# =========================
+# =========================================================
 
 async def stats(
     update: Update,
@@ -766,7 +810,7 @@ async def stats(
     conn.close()
 
     points = user["points"]
-    usdt = points / POINTS_PER_USDT
+    ton = points / POINTS_PER_TON
 
     text = f"""
 📊 إحصائياتك
@@ -777,8 +821,8 @@ async def stats(
 👥 عدد الإحالات:
 {referrals}
 
-💵 القيمة:
-{usdt:.4f} USDT
+💎 القيمة:
+{ton:.4f} TON
 """
 
     await query.message.reply_text(
@@ -787,9 +831,9 @@ async def stats(
     )
 
 
-# =========================
+# =========================================================
 # السحب
-# =========================
+# =========================================================
 
 async def withdraw(
     update: Update,
@@ -819,8 +863,8 @@ async def withdraw(
 💸 الحد الأدنى:
 {MIN_WITHDRAW_POINTS:,} نقطة
 
-💵 الحد الأدنى:
-1 USDT
+💎 الحد الأدنى:
+1 TON
 
 📌 تحتاج إلى:
 {missing:,} نقطة إضافية.
@@ -837,21 +881,42 @@ async def withdraw(
 
     await query.message.reply_text(
         """
-💳 طلب السحب
+💎 طلب سحب TON
 
-أرسل الآن عنوان محفظة USDT.
+أرسل الآن عنوان محفظة TON الخاصة بك.
+
+👛 يمكنك استخدام عنوان محفظتك في TON Keeper.
 
 ⚠️ تأكد من صحة العنوان قبل الإرسال.
 
-لإلغاء العملية استخدم:
-/cancel
+❌ لإلغاء العملية:
+ /cancel
 """
     )
 
 
-# =========================
+# =========================================================
+# التحقق من عنوان TON
+# =========================================================
+
+def looks_like_ton_wallet(wallet):
+
+    wallet = wallet.strip()
+
+    # عناوين TON الشائعة تبدأ بـ EQ أو UQ
+    if wallet.startswith("EQ") or wallet.startswith("UQ"):
+        return len(wallet) >= 40
+
+    # دعم بعض الصيغ الأخرى
+    if wallet.startswith("0:"):
+        return len(wallet) >= 60
+
+    return False
+
+
+# =========================================================
 # استقبال المحفظة
-# =========================
+# =========================================================
 
 async def receive_wallet(
     update: Update,
@@ -868,11 +933,23 @@ async def receive_wallet(
 
     wallet = update.message.text.strip()
 
-    if len(wallet) < 10:
+    if not looks_like_ton_wallet(wallet):
 
         await update.message.reply_text(
-            "❌ عنوان المحفظة يبدو غير صحيح.\n"
-            "أرسل عنواناً صحيحاً."
+            """
+❌ عنوان TON يبدو غير صحيح.
+
+أرسل عنوان TON صحيحاً.
+
+مثال:
+EQ...
+
+أو:
+UQ...
+
+ولإلغاء العملية:
+ /cancel
+"""
         )
 
         return
@@ -895,30 +972,67 @@ async def receive_wallet(
 
         return
 
-    usdt = points / POINTS_PER_USDT
-
+    # منع وجود طلب سحب معلق
     conn = get_db()
 
+    pending = conn.execute("""
+        SELECT id
+        FROM withdrawals
+        WHERE user_id = ?
+        AND status = 'pending'
+        LIMIT 1
+    """, (
+        user.id,
+    )).fetchone()
+
+    if pending:
+
+        conn.close()
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            """
+⏳ لديك طلب سحب قيد المراجعة بالفعل.
+
+انتظر معالجة الطلب الحالي قبل إنشاء طلب جديد.
+""",
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+    usdt_old = None
+
+    points = int(points)
+
+    ton = points / POINTS_PER_TON
+
+    # تسجيل طلب السحب
     conn.execute("""
         INSERT INTO withdrawals
         (
             user_id,
             points,
-            usdt,
+            ton,
             wallet,
             status,
-            created_at
+            tx_hash,
+            created_at,
+            processed_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user.id,
         points,
-        usdt,
+        ton,
         wallet,
         "pending",
-        datetime.now().isoformat()
+        None,
+        datetime.now().isoformat(),
+        None
     ))
 
+    # تصفير الرصيد بعد حجزه
     conn.execute("""
         UPDATE users
         SET points = 0
@@ -936,24 +1050,26 @@ async def receive_wallet(
         f"""
 ✅ تم تسجيل طلب السحب.
 
-💵 المبلغ:
-{usdt:.4f} USDT
+💎 المبلغ:
+{ton:.4f} TON
 
 ⭐ النقاط:
 {points:,}
 
-💳 المحفظة:
+👛 محفظة TON:
 {wallet}
 
 ⏳ الحالة:
 قيد المراجعة
 
-سيتم مراجعة الطلب من الإدارة.
+🔐 سيتم تنفيذ التحويل من محفظة الدفع بعد معالجة الطلب.
 """,
         reply_markup=main_keyboard()
     )
 
+    # =====================================================
     # إشعار الإدارة
+    # =====================================================
 
     if ADMIN_ID:
 
@@ -962,7 +1078,7 @@ async def receive_wallet(
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"""
-🚨 طلب سحب جديد
+🚨 طلب سحب TON جديد
 
 👤 المستخدم:
 {user.first_name}
@@ -973,14 +1089,16 @@ async def receive_wallet(
 ⭐ النقاط:
 {points:,}
 
-💵 المبلغ:
-{usdt:.4f} USDT
+💎 المبلغ:
+{ton:.4f} TON
 
-💳 المحفظة:
+👛 محفظة TON:
 {wallet}
 
 ⏳ الحالة:
-Pending
+PENDING
+
+🆔 سيتم إنشاء Transaction Hash بعد تنفيذ التحويل.
 """
             )
 
@@ -991,9 +1109,9 @@ Pending
             )
 
 
-# =========================
+# =========================================================
 # لوحة الإدارة
-# =========================
+# =========================================================
 
 async def admin(
     update: Update,
@@ -1021,6 +1139,12 @@ async def admin(
         WHERE status = 'pending'
     """).fetchone()["count"]
 
+    paid = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM withdrawals
+        WHERE status = 'paid'
+    """).fetchone()["count"]
+
     conn.close()
 
     await update.message.reply_text(
@@ -1030,11 +1154,14 @@ async def admin(
 👥 عدد المستخدمين:
 {users}
 
-💸 طلبات السحب المعلقة:
+⏳ طلبات السحب المعلقة:
 {pending}
 
+✅ طلبات السحب المدفوعة:
+{paid}
+
 💎 التحويل:
-1000 نقطة = 1 USDT
+1000 نقطة = 1 TON
 
 🎁 التسجيل:
 {WELCOME_BONUS:,} نقطة
@@ -1054,9 +1181,9 @@ async def admin(
     )
 
 
-# =========================
+# =========================================================
 # إضافة نقاط
-# =========================
+# =========================================================
 
 async def addpoints(
     update: Update,
@@ -1126,15 +1253,15 @@ async def addpoints(
 ⭐ النقاط المضافة:
 {points:,}
 
-💵 القيمة:
-{points / POINTS_PER_USDT:.4f} USDT
+💎 القيمة:
+{points / POINTS_PER_TON:.4f} TON
 """
     )
 
 
-# =========================
+# =========================================================
 # إلغاء
-# =========================
+# =========================================================
 
 async def cancel(
     update: Update,
@@ -1149,9 +1276,9 @@ async def cancel(
     )
 
 
-# =========================
+# =========================================================
 # تشغيل البوت
-# =========================
+# =========================================================
 
 def main():
 
@@ -1170,9 +1297,9 @@ def main():
         .build()
     )
 
-    # =====================
+    # =====================================================
     # الأوامر
-    # =====================
+    # =====================================================
 
     application.add_handler(
         CommandHandler(
@@ -1202,9 +1329,9 @@ def main():
         )
     )
 
-    # =====================
+    # =====================================================
     # الأزرار
-    # =====================
+    # =====================================================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -1269,9 +1396,9 @@ def main():
         )
     )
 
-    # =====================
-    # استقبال المحفظة
-    # =====================
+    # =====================================================
+    # استقبال عنوان المحفظة
+    # =====================================================
 
     application.add_handler(
         MessageHandler(
@@ -1281,15 +1408,15 @@ def main():
     )
 
     print(
-        "Faris Earn Bot is running..."
+        "Faris Earn TON Bot is running..."
     )
 
     application.run_polling()
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
 if __name__ == "__main__":
     main()
