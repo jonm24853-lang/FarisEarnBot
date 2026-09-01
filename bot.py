@@ -32,24 +32,19 @@ POINTS_PER_USDT = 1000
 # الحد الأدنى للسحب = 1000 نقطة = 1 USDT
 MIN_WITHDRAW_POINTS = 1000
 
-WELCOME_BONUS = 100
-
-REFERRAL_BONUS = 500
-
-CHANNEL_BONUS = 100
-
-YOUTUBE_BONUS = 100
-
-DAILY_BONUS = 100
+# المكافآت
+WELCOME_BONUS = 1000
+REFERRAL_BONUS = 5000
+CHANNEL_BONUS = 1000
+YOUTUBE_BONUS = 1000
+DAILY_BONUS = 1000
 
 # =========================
 # الروابط
 # =========================
 
 TELEGRAM_CHANNEL = "@farehes"
-
 TELEGRAM_CHANNEL_LINK = "https://t.me/farehes"
-
 YOUTUBE_CHANNEL_LINK = "https://www.youtube.com/@VsdGggf"
 
 # =========================
@@ -196,7 +191,6 @@ def create_user(
     ))
 
     # مكافأة الإحالة
-
     if referred_by and referred_by != user_id:
 
         referrer = conn.execute(
@@ -316,19 +310,19 @@ async def start(
 1000 نقطة = 1 USDT
 
 🎁 مكافأة التسجيل:
-{WELCOME_BONUS} نقطة
+{WELCOME_BONUS:,} نقطة
 
 👥 مكافأة الإحالة:
-{REFERRAL_BONUS} نقطة
+{REFERRAL_BONUS:,} نقطة
 
 📢 مكافأة Telegram:
-{CHANNEL_BONUS} نقطة
+{CHANNEL_BONUS:,} نقطة
 
 📺 مكافأة YouTube:
-{YOUTUBE_BONUS} نقطة
+{YOUTUBE_BONUS:,} نقطة
 
 🎁 المكافأة اليومية:
-{DAILY_BONUS} نقطة
+{DAILY_BONUS:,} نقطة
 
 اختر من القائمة 👇
 """
@@ -362,7 +356,6 @@ async def balance(
         return
 
     points = user["points"]
-
     usdt = points / POINTS_PER_USDT
 
     text = f"""
@@ -397,7 +390,6 @@ async def referral(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     bot = await context.bot.get_me()
@@ -410,8 +402,11 @@ async def referral(
     text = f"""
 👥 نظام الإحالة
 
-🎁 اربح {REFERRAL_BONUS} نقطة
+🎁 اربح {REFERRAL_BONUS:,} نقطة
 عن كل شخص يسجل عن طريق رابطك.
+
+💵 القيمة:
+{REFERRAL_BONUS / POINTS_PER_USDT:.2f} USDT
 
 🔗 رابط الإحالة الخاص بك:
 
@@ -436,7 +431,6 @@ async def tasks(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     keyboard = InlineKeyboardMarkup([
@@ -488,17 +482,17 @@ async def tasks(
 🎁 المهام
 
 📢 اشتراك Telegram
-⭐ +{CHANNEL_BONUS} نقطة
+⭐ +{CHANNEL_BONUS:,} نقطة
 
 📺 قناة YouTube
-⭐ +{YOUTUBE_BONUS} نقطة
+⭐ +{YOUTUBE_BONUS:,} نقطة
 
 🎁 المكافأة اليومية
-⭐ +{DAILY_BONUS} نقطة
+⭐ +{DAILY_BONUS:,} نقطة
 مرة واحدة يومياً
 
 👥 دعوة الأصدقاء
-⭐ +{REFERRAL_BONUS} نقطة
+⭐ +{REFERRAL_BONUS:,} نقطة
 لكل إحالة ناجحة
 
 نفذ المهام واحصل على النقاط 👇
@@ -520,7 +514,6 @@ async def check_channel(
 ):
 
     query = update.callback_query
-
     user_id = query.from_user.id
 
     try:
@@ -573,7 +566,7 @@ async def check_channel(
         conn.close()
 
         await query.answer(
-            f"🎉 +{CHANNEL_BONUS} نقطة!",
+            f"🎉 +{CHANNEL_BONUS:,} نقطة!",
             show_alert=True
         )
 
@@ -584,7 +577,7 @@ async def check_channel(
 📢 اشتراك Telegram مؤكد.
 
 🎁 المكافأة:
-+{CHANNEL_BONUS} نقطة
++{CHANNEL_BONUS:,} نقطة
 """,
             reply_markup=main_keyboard()
         )
@@ -611,11 +604,9 @@ async def youtube_bonus(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     user_id = query.from_user.id
-
     user = get_user(user_id)
 
     if not user:
@@ -652,7 +643,7 @@ async def youtube_bonus(
 📺 شكراً لدعم القناة.
 
 🎁 المكافأة:
-+{YOUTUBE_BONUS} نقطة
++{YOUTUBE_BONUS:,} نقطة
 
 ⚠️ ملاحظة:
 البوت لا يستطيع التحقق تلقائياً من اشتراك YouTube.
@@ -671,11 +662,9 @@ async def daily_bonus(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     user_id = query.from_user.id
-
     user = get_user(user_id)
 
     if not user:
@@ -718,7 +707,10 @@ async def daily_bonus(
 
 🎁 حصلت على المكافأة اليومية.
 
-⭐ +{DAILY_BONUS} نقطة
+⭐ +{DAILY_BONUS:,} نقطة
+
+💵 القيمة:
+{DAILY_BONUS / POINTS_PER_USDT:.2f} USDT
 
 📅 عد غداً للحصول على مكافأة جديدة.
 """,
@@ -736,7 +728,6 @@ async def main_menu(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     await query.message.reply_text(
@@ -755,7 +746,6 @@ async def stats(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     user = get_user(query.from_user.id)
@@ -776,7 +766,6 @@ async def stats(
     conn.close()
 
     points = user["points"]
-
     usdt = points / POINTS_PER_USDT
 
     text = f"""
@@ -808,7 +797,6 @@ async def withdraw(
 ):
 
     query = update.callback_query
-
     await query.answer()
 
     user = get_user(query.from_user.id)
@@ -820,9 +808,7 @@ async def withdraw(
 
     if points < MIN_WITHDRAW_POINTS:
 
-        missing = (
-            MIN_WITHDRAW_POINTS - points
-        )
+        missing = MIN_WITHDRAW_POINTS - points
 
         text = f"""
 ❌ لا يمكنك السحب حالياً.
@@ -847,9 +833,7 @@ async def withdraw(
 
         return
 
-    context.user_data[
-        "withdraw_step"
-    ] = "wallet"
+    context.user_data["withdraw_step"] = "wallet"
 
     await query.message.reply_text(
         """
@@ -860,7 +844,7 @@ async def withdraw(
 ⚠️ تأكد من صحة العنوان قبل الإرسال.
 
 لإلغاء العملية استخدم:
- /cancel
+/cancel
 """
     )
 
@@ -1053,19 +1037,19 @@ async def admin(
 1000 نقطة = 1 USDT
 
 🎁 التسجيل:
-{WELCOME_BONUS} نقطة
+{WELCOME_BONUS:,} نقطة
 
 👥 الإحالة:
-{REFERRAL_BONUS} نقطة
+{REFERRAL_BONUS:,} نقطة
 
 📢 Telegram:
-{CHANNEL_BONUS} نقطة
+{CHANNEL_BONUS:,} نقطة
 
 📺 YouTube:
-{YOUTUBE_BONUS} نقطة
+{YOUTUBE_BONUS:,} نقطة
 
 🎁 اليومية:
-{DAILY_BONUS} نقطة
+{DAILY_BONUS:,} نقطة
 """
     )
 
@@ -1099,7 +1083,6 @@ async def addpoints(
     try:
 
         user_id = int(context.args[0])
-
         points = int(context.args[1])
 
     except ValueError:
@@ -1142,6 +1125,9 @@ async def addpoints(
 
 ⭐ النقاط المضافة:
 {points:,}
+
+💵 القيمة:
+{points / POINTS_PER_USDT:.4f} USDT
 """
     )
 
@@ -1184,7 +1170,9 @@ def main():
         .build()
     )
 
+    # =====================
     # الأوامر
+    # =====================
 
     application.add_handler(
         CommandHandler(
@@ -1214,7 +1202,9 @@ def main():
         )
     )
 
+    # =====================
     # الأزرار
+    # =====================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -1279,7 +1269,9 @@ def main():
         )
     )
 
+    # =====================
     # استقبال المحفظة
+    # =====================
 
     application.add_handler(
         MessageHandler(
