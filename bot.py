@@ -36,7 +36,7 @@ POINTS_PER_TON = 1000
 # الحد الأدنى للسحب
 MIN_WITHDRAW_POINTS = 1000
 
-# الحد الأقصى للسحب في اليوم لكل مستخدم
+# عدد السحوبات المسموح بها يومياً
 MAX_WITHDRAWALS_PER_DAY = 2
 
 # =========================================================
@@ -84,7 +84,10 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
+    # -----------------------------------------------------
     # المستخدمون
+    # -----------------------------------------------------
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -99,7 +102,10 @@ def init_db():
         )
     """)
 
+    # -----------------------------------------------------
     # طلبات السحب
+    # -----------------------------------------------------
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +120,10 @@ def init_db():
         )
     """)
 
+    # -----------------------------------------------------
     # دعم قواعد البيانات القديمة
+    # -----------------------------------------------------
+
     user_columns = [
         row["name"]
         for row in cur.execute(
@@ -233,7 +242,10 @@ def create_user(
         None,
     ))
 
+    # -----------------------------------------------------
     # مكافأة الإحالة
+    # -----------------------------------------------------
+
     if referred_by and referred_by != user_id:
 
         referrer = conn.execute("""
@@ -277,7 +289,7 @@ def add_points(user_id, points):
 
 
 # =========================================================
-# حساب عدد السحوبات اليوم
+# عدد السحوبات اليوم
 # =========================================================
 
 def get_today_withdrawal_count(user_id):
@@ -303,7 +315,7 @@ def get_today_withdrawal_count(user_id):
 
 
 # =========================================================
-# لوحة الأزرار
+# لوحة الأزرار الرئيسية
 # =========================================================
 
 def main_keyboard():
@@ -407,19 +419,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
-    await query.answer()
 
-    user = get_user(query.from_user.id)
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
+    user_id = query.from_user.id
+
+    user = get_user(user_id)
+
+    # إذا لم يكن المستخدم موجوداً
     if not user:
-        return
 
-    points = user["points"]
+        create_user(
+            user_id,
+            query.from_user.username,
+            query.from_user.first_name
+        )
+
+        user = get_user(user_id)
+
+    points = int(user["points"] or 0)
+
     ton = points / POINTS_PER_TON
 
-    count = get_today_withdrawal_count(
-        query.from_user.id
-    )
+    count = get_today_withdrawal_count(user_id)
 
     remaining = max(
         0,
@@ -437,15 +462,15 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {ton:.4f} TON
 
 📌 التحويل:
-1000 نقطة = 1 TON
+1,000 نقطة = 1 TON
 
-💸 الحد الأدنى:
-1 TON
+💸 الحد الأدنى للسحب:
+1,000 نقطة = 1 TON
 
-🔄 السحب اليومي:
+🔄 السحوبات اليوم:
 {count}/{MAX_WITHDRAWALS_PER_DAY}
 
-📤 السحوبات المتبقية اليوم:
+📤 السحوبات المتبقية:
 {remaining}
 """,
         reply_markup=main_keyboard()
@@ -459,6 +484,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     bot = await context.bot.get_me()
@@ -495,6 +521,7 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     keyboard = InlineKeyboardMarkup([
@@ -571,6 +598,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     user_id = query.from_user.id
 
     await query.answer()
@@ -592,6 +620,7 @@ async def check_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ اشترك في القناة أولاً.",
                 show_alert=True
             )
+
             return
 
         user = get_user(user_id)
@@ -605,6 +634,7 @@ async def check_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "ℹ️ حصلت على المكافأة مسبقاً.",
                 show_alert=True
             )
+
             return
 
         conn = get_db()
@@ -656,9 +686,11 @@ async def check_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def youtube_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     user_id = query.from_user.id
+
     user = get_user(user_id)
 
     if not user:
@@ -670,6 +702,7 @@ async def youtube_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ℹ️ حصلت على مكافأة YouTube مسبقاً.",
             reply_markup=main_keyboard()
         )
+
         return
 
     conn = get_db()
@@ -707,9 +740,11 @@ async def youtube_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     user_id = query.from_user.id
+
     user = get_user(user_id)
 
     if not user:
@@ -723,6 +758,7 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⏳ لقد استلمت المكافأة اليومية اليوم.",
             reply_markup=main_keyboard()
         )
+
         return
 
     conn = get_db()
@@ -762,6 +798,7 @@ async def daily_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     await query.message.reply_text(
@@ -777,9 +814,12 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
-    user = get_user(query.from_user.id)
+    user_id = query.from_user.id
+
+    user = get_user(user_id)
 
     if not user:
         return
@@ -791,17 +831,16 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         FROM users
         WHERE referred_by = ?
     """, (
-        query.from_user.id,
+        user_id,
     )).fetchone()["count"]
 
     conn.close()
 
-    points = user["points"]
+    points = int(user["points"] or 0)
+
     ton = points / POINTS_PER_TON
 
-    today_count = get_today_withdrawal_count(
-        query.from_user.id
-    )
+    today_count = get_today_withdrawal_count(user_id)
 
     await query.message.reply_text(
         f"""
@@ -830,16 +869,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     user_id = query.from_user.id
+
     user = get_user(user_id)
 
     if not user:
-        return
+
+        create_user(
+            user_id,
+            query.from_user.username,
+            query.from_user.first_name
+        )
+
+        user = get_user(user_id)
 
     # -----------------------------------------------------
-    # التحقق من عدد السحوبات اليوم
+    # عدد السحوبات اليوم
     # -----------------------------------------------------
 
     today_count = get_today_withdrawal_count(user_id)
@@ -867,7 +915,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # الرصيد
     # -----------------------------------------------------
 
-    points = int(user["points"])
+    points = int(user["points"] or 0)
 
     if points < MIN_WITHDRAW_POINTS:
 
@@ -895,7 +943,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # -----------------------------------------------------
-    # منع طلب سحب آخر قيد المعالجة
+    # منع طلب سحب آخر قيد المراجعة
     # -----------------------------------------------------
 
     conn = get_db()
@@ -915,8 +963,11 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending:
 
         await query.message.reply_text(
-            """
+            f"""
 ⏳ لديك طلب سحب قيد المراجعة أو التحويل.
+
+🆔 رقم الطلب:
+#{pending["id"]}
 
 انتظر معالجة الطلب الحالي أولاً.
 """,
@@ -925,27 +976,29 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
+    # -----------------------------------------------------
+    # بدء إدخال المحفظة
+    # -----------------------------------------------------
+
+    context.user_data.clear()
+
     context.user_data["withdraw_step"] = "wallet"
 
     await query.message.reply_text(
-        f"""
+        """
 💎 طلب سحب TON
 
-🔄 السحوبات اليوم:
-{today_count}/{MAX_WITHDRAWALS_PER_DAY}
-
-💰 الحد الأدنى:
-1 TON
-
-👛 أرسل عنوان محفظة TON الخاصة بك.
+👛 أرسل الآن عنوان محفظة TON الخاصة بك.
 
 مثال:
+
 EQ...
 
 أو:
+
 UQ...
 
-⚠️ تأكد من صحة العنوان.
+⚠️ تأكد من صحة العنوان قبل الإرسال.
 
 ❌ للإلغاء:
  /cancel
@@ -978,9 +1031,6 @@ async def receive_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
 
-    if context.user_data.get("withdraw_step") != "wallet":
-        return
-
     wallet = update.message.text.strip()
 
     if not looks_like_ton_wallet(wallet):
@@ -997,7 +1047,8 @@ EQ...
 أو:
 UQ...
 
-/cancel للإلغاء
+❌ للإلغاء:
+/cancel
 """
         )
 
@@ -1006,10 +1057,17 @@ UQ...
     db_user = get_user(user.id)
 
     if not db_user:
+
+        await update.message.reply_text(
+            "❌ لم يتم العثور على حسابك. أرسل /start أولاً."
+        )
+
+        context.user_data.clear()
+
         return
 
     # -----------------------------------------------------
-    # إعادة التحقق من حد السحب
+    # إعادة التحقق من عدد السحوبات
     # -----------------------------------------------------
 
     today_count = get_today_withdrawal_count(user.id)
@@ -1029,7 +1087,11 @@ UQ...
 
         return
 
-    points = int(db_user["points"])
+    # -----------------------------------------------------
+    # إعادة التحقق من الرصيد
+    # -----------------------------------------------------
+
+    points = int(db_user["points"] or 0)
 
     if points < MIN_WITHDRAW_POINTS:
 
@@ -1042,9 +1104,12 @@ UQ...
 
         return
 
+    # -----------------------------------------------------
+    # منع طلب آخر
+    # -----------------------------------------------------
+
     conn = get_db()
 
-    # منع طلب آخر قيد المعالجة
     pending = conn.execute("""
         SELECT id
         FROM withdrawals
@@ -1058,16 +1123,24 @@ UQ...
     if pending:
 
         conn.close()
+
         context.user_data.clear()
 
         await update.message.reply_text(
-            """
+            f"""
 ⏳ لديك طلب سحب قيد المراجعة بالفعل.
+
+🆔 الطلب:
+#{pending["id"]}
 """,
             reply_markup=main_keyboard()
         )
 
         return
+
+    # -----------------------------------------------------
+    # حساب TON
+    # -----------------------------------------------------
 
     ton = points / POINTS_PER_TON
 
@@ -1101,7 +1174,10 @@ UQ...
 
     withdrawal_id = cursor.lastrowid
 
+    # -----------------------------------------------------
     # خصم النقاط وحجزها
+    # -----------------------------------------------------
+
     conn.execute("""
         UPDATE users
         SET points = points - ?
@@ -1116,9 +1192,13 @@ UQ...
 
     context.user_data.clear()
 
+    # -----------------------------------------------------
+    # رسالة المستخدم
+    # -----------------------------------------------------
+
     await update.message.reply_text(
         f"""
-✅ تم تسجيل طلب السحب.
+✅ تم تسجيل طلب السحب بنجاح.
 
 🆔 رقم الطلب:
 #{withdrawal_id}
@@ -1137,6 +1217,8 @@ UQ...
 
 🔄 السحوبات اليوم:
 {today_count + 1}/{MAX_WITHDRAWALS_PER_DAY}
+
+📌 سيتم مراجعة الطلب من الإدارة.
 """,
         reply_markup=main_keyboard()
     )
@@ -1224,10 +1306,17 @@ async def approve_withdrawal(
     await query.answer()
 
     try:
+
         withdrawal_id = int(
             query.data.split("_")[1]
         )
-    except:
+
+    except (ValueError, IndexError):
+
+        await query.message.reply_text(
+            "❌ رقم الطلب غير صحيح."
+        )
+
         return
 
     conn = get_db()
@@ -1281,6 +1370,8 @@ async def approve_withdrawal(
         reply_markup=None
     )
 
+    context.user_data.clear()
+
     context.user_data["admin_action"] = "tx_hash"
     context.user_data["withdrawal_id"] = withdrawal_id
 
@@ -1327,10 +1418,17 @@ async def reject_withdrawal(
     await query.answer()
 
     try:
+
         withdrawal_id = int(
             query.data.split("_")[1]
         )
-    except:
+
+    except (ValueError, IndexError):
+
+        await query.message.reply_text(
+            "❌ رقم الطلب غير صحيح."
+        )
+
         return
 
     conn = get_db()
@@ -1363,7 +1461,10 @@ async def reject_withdrawal(
 
         return
 
+    # -----------------------------------------------------
     # إعادة النقاط
+    # -----------------------------------------------------
+
     conn.execute("""
         UPDATE users
         SET points = points + ?
@@ -1402,6 +1503,10 @@ async def reject_withdrawal(
 {withdrawal["user_id"]}
 """
     )
+
+    # -----------------------------------------------------
+    # إشعار المستخدم
+    # -----------------------------------------------------
 
     try:
 
@@ -1449,6 +1554,11 @@ async def receive_tx_hash(
     if not withdrawal_id:
 
         context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ لا يوجد طلب تحويل قيد المعالجة."
+        )
+
         return
 
     if len(tx_hash) < 10:
@@ -1472,6 +1582,7 @@ async def receive_tx_hash(
     if not withdrawal:
 
         conn.close()
+
         context.user_data.clear()
 
         await update.message.reply_text(
@@ -1483,6 +1594,7 @@ async def receive_tx_hash(
     if withdrawal["status"] != "processing":
 
         conn.close()
+
         context.user_data.clear()
 
         await update.message.reply_text(
@@ -1490,6 +1602,10 @@ async def receive_tx_hash(
         )
 
         return
+
+    # -----------------------------------------------------
+    # تسجيل العملية
+    # -----------------------------------------------------
 
     conn.execute("""
         UPDATE withdrawals
@@ -1530,6 +1646,10 @@ PAID
 """
     )
 
+    # -----------------------------------------------------
+    # إشعار المستخدم
+    # -----------------------------------------------------
+
     try:
 
         await context.bot.send_message(
@@ -1542,6 +1662,9 @@ PAID
 
 💎 المبلغ:
 {withdrawal["ton"]:.4f} TON
+
+👛 المحفظة:
+{withdrawal["wallet"]}
 
 ✅ الحالة:
 تم التحويل
@@ -1789,7 +1912,7 @@ async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# إلغاء
+# /cancel
 # =========================================================
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1798,6 +1921,56 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "❌ تم إلغاء العملية.",
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================================================
+# استقبال النصوص - الإصلاح الأساسي
+# =========================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    # -----------------------------------------------------
+    # الأدمن ينتظر Transaction Hash
+    # -----------------------------------------------------
+
+    if (
+        user_id == ADMIN_ID
+        and context.user_data.get("admin_action") == "tx_hash"
+    ):
+
+        await receive_tx_hash(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # المستخدم يرسل محفظة TON
+    # -----------------------------------------------------
+
+    if context.user_data.get("withdraw_step") == "wallet":
+
+        await receive_wallet(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # أي نص آخر
+    # -----------------------------------------------------
+
+    await update.message.reply_text(
+        "🏠 اختر أحد الخيارات من القائمة 👇",
         reply_markup=main_keyboard()
     )
 
@@ -1834,23 +2007,38 @@ def main():
     # =====================================================
 
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("admin", admin)
+        CommandHandler(
+            "admin",
+            admin
+        )
     )
 
     application.add_handler(
-        CommandHandler("withdrawals", withdrawals_command)
+        CommandHandler(
+            "withdrawals",
+            withdrawals_command
+        )
     )
 
     application.add_handler(
-        CommandHandler("addpoints", addpoints)
+        CommandHandler(
+            "addpoints",
+            addpoints
+        )
     )
 
     application.add_handler(
-        CommandHandler("cancel", cancel)
+        CommandHandler(
+            "cancel",
+            cancel
+        )
     )
 
     # =====================================================
@@ -1860,63 +2048,63 @@ def main():
     application.add_handler(
         CallbackQueryHandler(
             balance,
-            pattern="^balance$"
+            pattern=r"^balance$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             referral,
-            pattern="^referral$"
+            pattern=r"^referral$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             tasks,
-            pattern="^tasks$"
+            pattern=r"^tasks$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             withdraw,
-            pattern="^withdraw$"
+            pattern=r"^withdraw$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             stats,
-            pattern="^stats$"
+            pattern=r"^stats$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             check_channel,
-            pattern="^check_channel$"
+            pattern=r"^check_channel$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             youtube_bonus,
-            pattern="^youtube_bonus$"
+            pattern=r"^youtube_bonus$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             daily_bonus,
-            pattern="^daily_bonus$"
+            pattern=r"^daily_bonus$"
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             main_menu,
-            pattern="^main_menu$"
+            pattern=r"^main_menu$"
         )
     )
 
@@ -1939,20 +2127,13 @@ def main():
     )
 
     # =====================================================
-    # استقبال النصوص
+    # Handler واحد فقط لاستقبال النصوص
     # =====================================================
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            receive_tx_hash
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            receive_wallet
+            text_handler
         )
     )
 
